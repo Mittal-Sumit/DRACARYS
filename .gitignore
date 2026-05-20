@@ -39,6 +39,15 @@ build/
 # Processed files
 processed_data/*.pkl
 
+# ChromaDB — regenerate with: python -m ingestion.ingest
+chroma_db/
+
+# Egg info
+*.egg-info/
+
+# Sentence transformer / HuggingFace model cache
+.cache/
+
 # Jupyter
 .ipynb_checkpoints/
 
@@ -55,6 +64,10 @@ tmp/
 
 # IDE
 .idea/
+
+# Claude Code
+.claude/settings.local.json
+CLAUDE.md
 
 # Logs
 logs/
