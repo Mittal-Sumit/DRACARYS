@@ -1,0 +1,61 @@
+# --------------------
+# Python
+# --------------------
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environment variables
+.env
+
+# Django
+db.sqlite3
+*.log
+media/
+staticfiles/
+
+# VSCode
+.vscode/
+
+# Mac/Linux
+.DS_Store
+
+# Windows
+Thumbs.db
+
+# --------------------
+# Node / React
+# --------------------
+node_modules/
+dist/
+build/
+
+# Vite
+.vite/
+
+
+# Processed files
+processed_data/*.pkl
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Pytest
+.pytest_cache/
+
+# Coverage
+.coverage
+htmlcov/
+
+# Temporary files
+temp/
+tmp/
+
+# IDE
+.idea/
+
+# Logs
+logs/
+*.log
