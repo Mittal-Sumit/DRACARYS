@@ -39,6 +39,12 @@ def retrieve(
 
     collection = _get_collection(persist_dir)
 
+    if collection.count() == 0:
+        raise RuntimeError(
+            "ChromaDB is empty. Run the ingestion pipeline first:\n"
+            "  python -m ingestion.ingest"
+        )
+
     # Fetch more than needed so we have room to filter and diversify
     fetch_n = n_results * 4
     results = collection.query(
