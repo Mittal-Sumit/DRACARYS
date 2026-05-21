@@ -1,13 +1,17 @@
 """
 Groq LLM client.
 Reads GROQ_API_KEY from the root .env file.
+Returns a structured dict (Task 8 — structured output).
 """
 
+import json
 from pathlib import Path
 from dotenv import load_dotenv
 import os
 
 load_dotenv(Path(__file__).parent.parent / ".env")
+
+_FALLBACK_KEYS = ["executive_summary", "proposed_solution", "relevant_experience", "why_us"]
 
 
 def get_groq_client():
@@ -21,20 +25,19 @@ def get_groq_client():
 def generate(
     query: str,
     context_chunks: list[dict],
-    model: str = "llama-3.3-70b-versatile",
+    model: str = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
     temperature: float = 0.3,
-) -> str:
+) -> dict:
     """
-    Send query + retrieved chunks to Groq and return the generated proposal text.
-
-    Args:
-        query:          The client request / user question
-        context_chunks: Output from retriever.retrieve()
-        model:          Groq model ID
-        temperature:    Lower = more factual and consistent (recommended for proposals)
+    Send query + retrieved chunks to Groq and return a structured proposal dict.
 
     Returns:
-        Generated proposal as a string.
+        {
+            "executive_summary": "...",
+            "proposed_solution": "...",
+            "relevant_experience": "...",
+            "why_us": "..."
+        }
     """
     from rag.prompts import SYSTEM_PROMPT, build_user_message
 
@@ -44,10 +47,16 @@ def generate(
     response = client.chat.completions.create(
         model=model,
         temperature=temperature,
+        response_format={"type": "json_object"},
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_message},
         ],
     )
 
-    return response.choices[0].message.content
+    content = response.choices[0].message.content
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        # Fallback: return raw content under executive_summary so nothing is lost
+        return {key: "" for key in _FALLBACK_KEYS} | {"executive_summary": content}

@@ -39,7 +39,8 @@ def store_chunks(
     ids = [f"{c['file']}__chunk_{c['chunk_id']}" for c in chunks]
     embeddings = [c["embedding"] for c in chunks]
     documents = [c["text"] for c in chunks]
-    metadatas = [{"file": c["file"], "chunk_id": c["chunk_id"]} for c in chunks]
+    from ingestion.doc_metadata import get_doc_metadata
+    metadatas = [{"file": c["file"], "chunk_id": c["chunk_id"], **get_doc_metadata(c["file"])} for c in chunks]
 
     collection.upsert(
         ids=ids,

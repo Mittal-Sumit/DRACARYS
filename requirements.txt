@@ -29,6 +29,9 @@ sentence-transformers>=3.0.0
 # Vector database
 chromadb>=0.5.0
 
+# Hybrid search (BM25 keyword retrieval)
+rank-bm25>=0.2.2
+
 # LLM (Groq)
 groq>=0.9.0
 

@@ -6,5 +6,8 @@ class ProposalRequestSerializer(serializers.Serializer):
 
 
 class ProposalResponseSerializer(serializers.Serializer):
-    proposal = serializers.CharField()
+    executive_summary = serializers.CharField()
+    proposed_solution = serializers.CharField()
+    relevant_experience = serializers.CharField()
+    why_us = serializers.CharField()
     sources = serializers.ListField(child=serializers.CharField())
