@@ -1,17 +1,31 @@
 """
 Retriever — the most critical component of the RAG pipeline.
 
-Uses hybrid search: vector similarity (semantic) + BM25 (keyword).
-Combined via Reciprocal Rank Fusion (RRF).
+Pipeline:
+  1. Hybrid search  — vector similarity (bge-large) + BM25 keyword
+  2. RRF merge      — Reciprocal Rank Fusion combines both rankings
+  3. Rerank         — cross-encoder scores each (query, chunk) pair precisely
+  4. Diversity      — cap chunks per source file so no single doc dominates
 
-Why hybrid?
-- Vectors capture meaning but miss exact terms (acronyms, tech names, client names)
-- BM25 catches exact keyword matches that vectors can underweight
-- RRF merges both rankings without needing score normalisation
+Why each step?
+- Vectors: semantic meaning, handles paraphrasing
+- BM25: exact keyword match (tech names, acronyms, client names)
+- Cross-encoder: reads query + chunk together, far more accurate than bi-encoder
 """
 
 from ingestion.embeddings import get_model
 from ingestion.ingest import _get_collection, _CHROMA_DIR
+from sentence_transformers import CrossEncoder
+
+_reranker: CrossEncoder | None = None
+_RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+
+
+def _get_reranker() -> CrossEncoder:
+    global _reranker
+    if _reranker is None:
+        _reranker = CrossEncoder(_RERANK_MODEL)
+    return _reranker
 
 
 def retrieve(
@@ -21,7 +35,7 @@ def retrieve(
     persist_dir: str = _CHROMA_DIR,
 ) -> list[dict]:
     """
-    Hybrid semantic + keyword search over the ChromaDB proposal store.
+    Hybrid search → RRF → cross-encoder rerank → source diversity.
 
     Args:
         query:        Natural language query from the user
@@ -31,6 +45,7 @@ def retrieve(
 
     Returns:
         [{"text", "file", "chunk_id", "display_name", "score"}, ...]
+        score reflects cross-encoder relevance (higher = more relevant)
     """
     collection = _get_collection(persist_dir)
 
@@ -43,9 +58,9 @@ def retrieve(
     total = collection.count()
     fetch_n = min(n_results * 4, total)
 
-    # ── Vector search ──────────────────────────────────────────────────────
+    # ── 1. Vector search ───────────────────────────────────────────────────
     model = get_model()
-    query_embedding = model.encode([query])[0].tolist()
+    query_embedding = model.encode([query], normalize_embeddings=True)[0].tolist()
 
     vector_results = collection.query(
         query_embeddings=[query_embedding],
@@ -67,14 +82,13 @@ def retrieve(
         )
     ]
 
-    # ── BM25 keyword search ─────────────────────────────────────────────────
+    # ── 2. BM25 keyword search ─────────────────────────────────────────────
     all_data = collection.get(include=["documents", "metadatas"])
     all_docs = all_data["documents"]
     all_metas = all_data["metadatas"]
 
     from rank_bm25 import BM25Okapi
-    tokenized_corpus = [doc.lower().split() for doc in all_docs]
-    bm25 = BM25Okapi(tokenized_corpus)
+    bm25 = BM25Okapi([doc.lower().split() for doc in all_docs])
     bm25_scores = bm25.get_scores(query.lower().split())
 
     top_bm25_idx = sorted(range(len(bm25_scores)), key=lambda i: bm25_scores[i], reverse=True)[:fetch_n]
@@ -89,13 +103,18 @@ def retrieve(
         for i in top_bm25_idx
     ]
 
-    # ── Reciprocal Rank Fusion ──────────────────────────────────────────────
+    # ── 3. RRF merge ───────────────────────────────────────────────────────
     combined = _rrf_combine(vector_chunks, bm25_chunks)
 
-    # ── Source diversity ────────────────────────────────────────────────────
+    # ── 4. Cross-encoder rerank ────────────────────────────────────────────
+    # Rerank top 20 candidates — cross-encoder is slow on large sets
+    candidates = combined[:min(20, len(combined))]
+    reranked = _rerank(query, candidates)
+
+    # ── 5. Source diversity ────────────────────────────────────────────────
     file_counts: dict[str, int] = {}
     results = []
-    for chunk in combined:
+    for chunk in reranked:
         count = file_counts.get(chunk["file"], 0)
         if count < max_per_file:
             results.append(chunk)
@@ -104,6 +123,16 @@ def retrieve(
             break
 
     return results
+
+
+def _rerank(query: str, chunks: list[dict]) -> list[dict]:
+    """Re-score chunks using cross-encoder. Returns sorted by rerank score."""
+    reranker = _get_reranker()
+    pairs = [[query, chunk["text"]] for chunk in chunks]
+    scores = reranker.predict(pairs)
+    for chunk, score in zip(chunks, scores):
+        chunk["score"] = round(float(score), 4)
+    return sorted(chunks, key=lambda x: x["score"], reverse=True)
 
 
 def _rrf_combine(vector_chunks: list[dict], bm25_chunks: list[dict], k: int = 60) -> list[dict]:
@@ -129,7 +158,7 @@ def format_for_display(chunks: list[dict]) -> str:
     """Pretty-print retrieved chunks for debugging."""
     lines = []
     for i, c in enumerate(chunks, 1):
-        lines.append(f"[{i}] {c.get('display_name', c['file'])}  (score: {c['score']})")
+        lines.append(f"[{i}] {c.get('display_name', c['file'])}  (rerank score: {c['score']})")
         lines.append(c["text"][:300])
         lines.append("")
     return "\n".join(lines)
