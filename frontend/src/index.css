@@ -2,35 +2,53 @@
 *::before,
 *::after {
   box-sizing: border-box;
+  margin: 0;
+  padding: 0;
 }
 
 :root {
-  --sidebar-bg: #0f1119;
-  --sidebar-text: #9ca3af;
-  --sidebar-heading: #f3f4f6;
-  --accent: #7c3aed;
-  --accent-hover: #6d28d9;
-  --bg: #f9fafb;
+  --primary: #ee752b;
+  --primary-hover: #d66521;
+  --accent: #00b4d8;
+  --accent-hover: #0098b8;
+  --bg: #fff8f0;
   --surface: #ffffff;
-  --text: #374151;
-  --text-heading: #111827;
-  --border: #e5e7eb;
+  --text-main: #003e4a;
+  --muted: #90b4ce;
+  --border: rgba(0, 62, 74, 0.06);
+  --shadow-soft: 0 12px 32px rgba(0, 62, 74, 0.08);
+  --shadow-input: 0 12px 32px rgba(0, 62, 74, 0.06);
+  --radius: 0.5rem;
+  --radius-lg: 32px;
+  --radius-xl: 2rem;
+  --radius-full: 9999px;
   --error-bg: #fef2f2;
-  --error-text: #991b1b;
+  --error-text: #dc2626;
   --error-border: #fecaca;
 
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-family: "Nunito", system-ui, -apple-system, sans-serif;
   font-size: 16px;
-  line-height: 1.5;
-  color: var(--text);
+  line-height: 1.6;
+  color: var(--text-main);
   background: var(--bg);
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: "Quicksand", sans-serif;
 }
 
 body {
   margin: 0;
+  min-height: 100vh;
 }
 
 #root {
   min-height: 100vh;
+}
+
+::selection {
+  background: #fde68a;
+  color: var(--text-main);
 }
