@@ -416,6 +416,14 @@
 
 /* ========== Proposal Sections (inside sidekick bubble) ========== */
 
+.plain-section {
+  margin-bottom: 12px;
+}
+
+.plain-section:last-child {
+  margin-bottom: 0;
+}
+
 .proposal-section-inset {
   background: rgba(0, 0, 0, 0.08);
   border-radius: 12px;

@@ -13,6 +13,11 @@ const WELCOME_MSG = {
   text: "Hey! 👋 Ready to crush that pitch today? What are we working on?",
 };
 
+const CONVERSATIONAL_RE = /^(hi+|hello|hey|howdy|yo|sup|good\s+morning|good\s+afternoon|good\s+evening|thanks|thank\s+you|ok+|okay|yes|no+|bye|great|cool|nice|test|ping|check)[\s!?.]*$/i;
+
+const isConversational = (query) =>
+  CONVERSATIONAL_RE.test(query.trim()) || query.trim().length < 4;
+
 const messageVariants = {
   hidden: { opacity: 0, y: 20 },
   visible: {
@@ -35,6 +40,19 @@ const Home = () => {
   const handleSend = useCallback(async (query) => {
     const userMsg = { id: Date.now(), role: "user", text: query };
     setMessages((prev) => [...prev, userMsg]);
+
+    if (isConversational(query)) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: Date.now() + 1,
+          role: "assistant",
+          text: "I'm best at generating proposals! Describe the client's need or industry — e.g. \"supply chain dashboard for a retail FMCG client\" — and I'll draft something grounded in our past work.",
+        },
+      ]);
+      return;
+    }
+
     setLoading(true);
     setError(null);
 

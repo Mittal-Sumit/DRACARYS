@@ -11,9 +11,6 @@ import os
 
 load_dotenv(Path(__file__).parent.parent / ".env")
 
-_FALLBACK_KEYS = ["executive_summary", "proposed_solution", "relevant_experience", "why_us"]
-
-
 def get_groq_client():
     from groq import Groq
     api_key = os.getenv("GROQ_API_KEY")
@@ -26,7 +23,7 @@ def generate(
     query: str,
     context_chunks: list[dict],
     model: str = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
-    temperature: float = 0.3,
+    temperature: float = 0.5,
 ) -> dict:
     """
     Send query + retrieved chunks to Groq and return a structured proposal dict.
@@ -56,7 +53,11 @@ def generate(
 
     content = response.choices[0].message.content
     try:
-        return json.loads(content)
+        parsed = json.loads(content)
+        if "sections" not in parsed:
+            # LLM returned old 4-key format or unexpected shape — wrap it
+            text = " ".join(str(v) for v in parsed.values() if v)
+            return {"sections": [{"heading": None, "content": text or content}]}
+        return parsed
     except json.JSONDecodeError:
-        # Fallback: return raw content under executive_summary so nothing is lost
-        return {key: "" for key in _FALLBACK_KEYS} | {"executive_summary": content}
+        return {"sections": [{"heading": None, "content": content}]}

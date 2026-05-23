@@ -1,18 +1,27 @@
 import { motion } from "motion/react";
 import {
-  ClipboardList,
-  Wrench,
   Briefcase,
+  Wrench,
+  ClipboardList,
   Star,
+  Lightbulb,
   Inbox,
 } from "lucide-react";
 
-const SECTIONS = [
-  { label: "Executive Summary", key: "executive_summary", icon: ClipboardList },
-  { label: "Proposed Solution", key: "proposed_solution", icon: Wrench },
-  { label: "Relevant Experience", key: "relevant_experience", icon: Briefcase },
-  { label: "Why Us", key: "why_us", icon: Star },
+const ICON_RULES = [
+  [/(experience|project|case\s*stud|work|client|delivered)/i, Briefcase],
+  [/(solution|approach|architect|technical|implementation|build|stack)/i, Wrench],
+  [/(summary|overview|executive|background)/i, ClipboardList],
+  [/(why|differenti|advantage|unique|partner|choose)/i, Star],
 ];
+
+const getIcon = (heading) => {
+  if (!heading) return Lightbulb;
+  for (const [pattern, Icon] of ICON_RULES) {
+    if (pattern.test(heading)) return Icon;
+  }
+  return Lightbulb;
+};
 
 const sectionVariants = {
   hidden: { opacity: 0, y: 12 },
@@ -26,31 +35,36 @@ const sectionVariants = {
 const ProposalPreview = ({ data }) => (
   <div className="message-sidekick">
     <div className="sidekick-bubble">
-      <p className="sidekick-bubble-text mb-4">
-        Here&rsquo;s your proposal draft based on past work:
-      </p>
-
-      {SECTIONS.map(({ label, key, icon: Icon }, i) =>
-        data[key] ? (
+      {data.sections?.map((section, i) => {
+        const Icon = getIcon(section.heading);
+        return (
           <motion.div
-            key={key}
-            className="proposal-section-inset"
+            key={i}
+            className={section.heading ? "proposal-section-inset" : "plain-section"}
             custom={i}
             variants={sectionVariants}
             initial="hidden"
             animate="visible"
           >
-            <h3 className="proposal-section-heading">
-              <Icon size={14} />
-              {label}
-            </h3>
-            <p className="proposal-section-text">{data[key]}</p>
+            {section.heading && (
+              <h3 className="proposal-section-heading">
+                <Icon size={14} />
+                {section.heading}
+              </h3>
+            )}
+            <p className="proposal-section-text">{section.content}</p>
           </motion.div>
-        ) : null
-      )}
+        );
+      })}
 
       {data.sources?.length > 0 && (
-        <div className="proposal-section-inset">
+        <motion.div
+          className="proposal-section-inset"
+          custom={data.sections?.length ?? 0}
+          variants={sectionVariants}
+          initial="hidden"
+          animate="visible"
+        >
           <h3 className="proposal-section-heading">
             <Inbox size={14} />
             Generated Using
@@ -60,7 +74,7 @@ const ProposalPreview = ({ data }) => (
               <li key={src}>{src}</li>
             ))}
           </ul>
-        </div>
+        </motion.div>
       )}
     </div>
   </div>

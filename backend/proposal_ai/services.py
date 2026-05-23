@@ -10,33 +10,23 @@ from rag.llm import generate
 
 
 def generate_proposal(query: str) -> dict:
-    """
-    Full RAG pipeline: retrieve relevant chunks, generate structured proposal via Groq.
-
-    Returns:
-        {
-            "executive_summary": "...",
-            "proposed_solution": "...",
-            "relevant_experience": "...",
-            "why_us": "...",
-            "sources": ["Coca-Cola Demand Forecasting", ...]
-        }
-    """
     chunks = retrieve(query)
     result = generate(query, chunks)
 
-    seen = set()
+    sections = result.get("sections", [])
+
+    # Only surface sources when the response has structured sections (not plain chat)
+    has_headings = any(s.get("heading") for s in sections)
     sources = []
-    for chunk in chunks:
-        name = chunk.get("display_name") or chunk["file"]
-        if name not in seen:
-            sources.append(name)
-            seen.add(name)
+    if has_headings:
+        seen = set()
+        for chunk in chunks:
+            name = chunk.get("display_name") or chunk["file"]
+            if name not in seen:
+                sources.append(name)
+                seen.add(name)
 
     return {
-        "executive_summary": result.get("executive_summary", ""),
-        "proposed_solution": result.get("proposed_solution", ""),
-        "relevant_experience": result.get("relevant_experience", ""),
-        "why_us": result.get("why_us", ""),
+        "sections": sections,
         "sources": sources,
     }
