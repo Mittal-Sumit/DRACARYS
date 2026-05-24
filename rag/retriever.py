@@ -30,8 +30,8 @@ def _get_reranker() -> CrossEncoder:
 
 def retrieve(
     query: str,
-    n_results: int = 5,
-    max_per_file: int = 2,
+    n_results: int = 10,
+    max_per_file: int = 3,
     persist_dir: str = _CHROMA_DIR,
 ) -> list[dict]:
     """
@@ -111,16 +111,26 @@ def retrieve(
     candidates = combined[:min(20, len(combined))]
     reranked = _rerank(query, candidates)
 
-    # ── 5. Source diversity ────────────────────────────────────────────────
+    # ── 5. Source diversity + relevance threshold ─────────────────────────
+    # Cross-encoder outputs logits (~-10 to +10). Below -2 = clearly irrelevant.
+    MIN_SCORE = -2.0
+
     file_counts: dict[str, int] = {}
     results = []
     for chunk in reranked:
+        if chunk["score"] < MIN_SCORE:
+            continue
         count = file_counts.get(chunk["file"], 0)
         if count < max_per_file:
             results.append(chunk)
             file_counts[chunk["file"]] = count + 1
         if len(results) == n_results:
             break
+
+    # Fallback: if every chunk was below threshold, return top 3 anyway.
+    # The LLM will still have something to work with and can say context is limited.
+    if not results:
+        results = reranked[:3]
 
     return results
 

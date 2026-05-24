@@ -1,7 +1,7 @@
 """
 Split extracted documents into overlapping chunks using LangChain's
-RecursiveCharacterTextSplitter.  Larger chunks (1000 chars) preserve
-proposal context better than the default 500.
+RecursiveCharacterTextSplitter.  1500-char chunks preserve full paragraphs
+better than smaller sizes and reduce mid-sentence splits in case study content.
 """
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -9,8 +9,8 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 def chunk_documents(
     documents: list[dict],
-    chunk_size: int = 1000,
-    chunk_overlap: int = 150,
+    chunk_size: int = 1500,
+    chunk_overlap: int = 200,
 ) -> list[dict]:
     """
     Args:
