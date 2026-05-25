@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { motion } from "motion/react";
 import {
   Briefcase,
@@ -6,7 +7,23 @@ import {
   Star,
   Lightbulb,
   Inbox,
+  Copy,
+  Check,
 } from "lucide-react";
+
+const CopyButton = ({ text }) => {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = async () => {
+    await navigator.clipboard.writeText(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+  return (
+    <button className="copy-btn" onClick={handleCopy} title="Copy section">
+      {copied ? <Check size={13} /> : <Copy size={13} />}
+    </button>
+  );
+};
 
 const ICON_RULES = [
   [/(experience|project|case\s*stud|work|client|delivered)/i, Briefcase],
@@ -47,10 +64,13 @@ const ProposalPreview = ({ data }) => (
             animate="visible"
           >
             {section.heading && (
-              <h3 className="proposal-section-heading">
-                <Icon size={14} />
-                {section.heading}
-              </h3>
+              <div className="section-heading-row">
+                <h3 className="proposal-section-heading">
+                  <Icon size={14} />
+                  {section.heading}
+                </h3>
+                <CopyButton text={section.content} />
+              </div>
             )}
             <p className="proposal-section-text">{section.content}</p>
           </motion.div>

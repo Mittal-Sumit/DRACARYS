@@ -1,17 +1,26 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, Trash2 } from "lucide-react";
 import Sidebar from "../components/Sidebar";
 import ChatBox from "../components/ChatBox";
 import Loader from "../components/Loader";
 import ProposalPreview from "../components/ProposalPreview";
 import { generateProposal } from "../api/api";
 
+const STORAGE_KEY = "dracarys_messages";
+
 const WELCOME_MSG = {
   id: "welcome",
   role: "assistant",
   text: "Hey! 👋 Ready to crush that pitch today? What are we working on?",
 };
+
+const PROMPT_CHIPS = [
+  "Draft a proposal for a retail FMCG client",
+  "What Azure experience do we have?",
+  "Pharma data platform pitch",
+  "Supply chain analytics capabilities",
+];
 
 const CONVERSATIONAL_RE = /^(hi+|hello|hey|howdy|yo|sup|good\s+morning|good\s+afternoon|good\s+evening|thanks|thank\s+you|ok+|okay|yes|no+|bye|great|cool|nice|test|ping|check)[\s!?.]*$/i;
 
@@ -28,7 +37,16 @@ const messageVariants = {
 };
 
 const Home = () => {
-  const [messages, setMessages] = useState([WELCOME_MSG]);
+  const [messages, setMessages] = useState(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        return parsed.length > 0 ? [WELCOME_MSG, ...parsed] : [WELCOME_MSG];
+      }
+    } catch {}
+    return [WELCOME_MSG];
+  });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const chatEndRef = useRef(null);
@@ -36,6 +54,17 @@ const Home = () => {
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
+
+  useEffect(() => {
+    const toSave = messages.filter((m) => m.id !== "welcome");
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
+  }, [messages]);
+
+  const handleClear = useCallback(() => {
+    setMessages([WELCOME_MSG]);
+    localStorage.removeItem(STORAGE_KEY);
+    setError(null);
+  }, []);
 
   const handleSend = useCallback(async (query) => {
     const userMsg = { id: Date.now(), role: "user", text: query };
@@ -97,9 +126,15 @@ const Home = () => {
 
         {/* Chat area */}
         <div className="chat-area" id="chat-container">
-          {/* Date separator */}
+          {/* Date separator + clear */}
           <div className="chat-date">
             <span>Today</span>
+            {messages.length > 1 && (
+              <button className="clear-btn" onClick={handleClear} title="Clear chat">
+                <Trash2 size={12} />
+                Clear
+              </button>
+            )}
           </div>
 
           <AnimatePresence mode="wait">
@@ -155,6 +190,20 @@ const Home = () => {
               <AlertTriangle size={18} className="error-icon" aria-hidden="true" />
               <span>{error}</span>
             </motion.div>
+          )}
+
+          {messages.length === 1 && !loading && (
+            <div className="prompt-chips">
+              {PROMPT_CHIPS.map((chip) => (
+                <button
+                  key={chip}
+                  className="prompt-chip"
+                  onClick={() => handleSend(chip)}
+                >
+                  {chip}
+                </button>
+              ))}
+            </div>
           )}
 
           <div ref={chatEndRef} />

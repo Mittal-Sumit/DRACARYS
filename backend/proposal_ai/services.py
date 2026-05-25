@@ -9,8 +9,31 @@ from rag.retriever import retrieve
 from rag.llm import generate
 
 
+def _expand_query(query: str) -> list[str]:
+    return [
+        query,
+        f"past projects and experience related to: {query}",
+        f"technical approach, architecture and tools for: {query}",
+    ]
+
+
+def _retrieve_multi_angle(query: str) -> list[dict]:
+    """Run 3 query variants, deduplicate by (file, chunk_id), keep highest score, cap at 12."""
+    seen: dict[str, dict] = {}
+    for sub_q in _expand_query(query):
+        try:
+            results = retrieve(sub_q, n_results=8)
+        except RuntimeError:
+            raise
+        for chunk in results:
+            key = f"{chunk['file']}__chunk_{chunk['chunk_id']}"
+            if key not in seen or chunk["score"] > seen[key]["score"]:
+                seen[key] = chunk
+    return sorted(seen.values(), key=lambda c: c["score"], reverse=True)[:12]
+
+
 def generate_proposal(query: str) -> dict:
-    chunks = retrieve(query)
+    chunks = _retrieve_multi_angle(query)
     result = generate(query, chunks)
 
     sections = result.get("sections", [])
