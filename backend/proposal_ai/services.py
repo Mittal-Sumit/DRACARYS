@@ -11,15 +11,33 @@ from rag.llm import generate
 _USE_CREW_AI = os.getenv("USE_CREW_AI", "true").lower() == "true"
 
 
+def _build_sources(names: list[str]) -> list[dict]:
+    """Convert source display names to {name, url} objects for frontend linking."""
+    from ingestion.doc_metadata import get_filename_by_display_name
+    result = []
+    for name in names:
+        filename = get_filename_by_display_name(name)
+        result.append({
+            "name": name,
+            "url": f"/api/docs/{filename}" if filename else None,
+        })
+    return result
+
+
 def generate_proposal(query: str) -> dict:
     if _USE_CREW_AI:
         try:
             from rag.crew import run_crew
-            return run_crew(query)
+            result = run_crew(query)
         except RuntimeError:
             raise  # Empty ChromaDB — surface as 503
         except Exception:
-            pass  # Any other crew failure → fall back to simple pipeline
+            result = None
+
+        if result is not None:
+            result["sources"] = _build_sources(result.get("sources") or [])
+            return result
+
     return _generate_simple(query)
 
 
@@ -61,4 +79,4 @@ def _generate_simple(query: str) -> dict:
             if name not in seen:
                 sources.append(name)
                 seen.add(name)
-    return {"sections": sections, "sources": sources}
+    return {"sections": sections, "sources": _build_sources(sources)}

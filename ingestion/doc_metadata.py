@@ -97,3 +97,11 @@ def get_doc_metadata(filename: str) -> dict:
     if not meta["display_name"]:
         meta["display_name"] = filename.rsplit(".", 1)[0].replace("_", " ").replace("-", " ").title()
     return meta
+
+
+def get_filename_by_display_name(display_name: str) -> str | None:
+    """Reverse lookup: display name → original filename."""
+    for filename, meta in _DOC_METADATA.items():
+        if meta.get("display_name") == display_name:
+            return filename
+    return None

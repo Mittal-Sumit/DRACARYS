@@ -7,12 +7,20 @@ Usage:
 
 Run as a script to ingest all docs/ PDFs:
     python -m ingestion.ingest
+
+DOCS_DIR env var (optional): override the source folder.
+Set it to a OneDrive sync folder to ingest from OneDrive:
+    DOCS_DIR=C:/Users/You/OneDrive/Dracarys/docs
 """
 
+import os
 from pathlib import Path
 from typing import Optional
 
 import chromadb
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).parent.parent / ".env")
 
 _CHROMA_DIR = str(Path(__file__).parent.parent / "chroma_db")
 _COLLECTION_NAME = "proposals"
@@ -94,36 +102,55 @@ def retrieve(
 
 
 def run_pipeline(docs_dir: Optional[str] = None) -> None:
-    """Extract → Chunk → Embed → Store for all PDFs/DOCXs in docs_dir."""
+    """Extract → Chunk → Embed → Store for all PDFs/DOCXs in docs_dir.
+
+    Source priority:
+      1. ONEDRIVE_SHARING_URL in .env  → download via Microsoft Graph API
+      2. explicit docs_dir argument    → use that path directly
+      3. DOCS_DIR in .env             → local or OneDrive sync folder
+      4. docs/ in project root        → default fallback
+    """
+    import shutil
     from ingestion.extractors import extract_documents
     from ingestion.chunker import chunk_documents
     from ingestion.embeddings import embed_chunks
 
-    docs_path = Path(docs_dir) if docs_dir else Path(__file__).parent.parent / "docs"
-    paths = [str(p) for p in docs_path.glob("*") if p.suffix.lower() in (".pdf", ".docx", ".doc")]
+    tmp_dir = None
+    try:
+        # ── Source resolution ──────────────────────────────────────────────
+        if not docs_dir and os.getenv("ONEDRIVE_SHARING_URL"):
+            from ingestion.onedrive import fetch_docs_to_tempdir
+            tmp_dir, paths = fetch_docs_to_tempdir()
+        else:
+            resolved = docs_dir or os.getenv("DOCS_DIR") or str(Path(__file__).parent.parent / "docs")
+            docs_path = Path(resolved)
+            paths = [str(p) for p in docs_path.glob("*") if p.suffix.lower() in (".pdf", ".docx", ".doc")]
+            if not paths:
+                print(f"No documents found in {docs_path}")
+                return
+            print(f"Found {len(paths)} document(s): {[Path(p).name for p in paths]}")
 
-    if not paths:
-        print(f"No documents found in {docs_path}")
-        return
+        # ── Pipeline ───────────────────────────────────────────────────────
+        print("Extracting text...")
+        documents = extract_documents(paths)
 
-    print(f"Found {len(paths)} document(s): {[Path(p).name for p in paths]}")
+        print("Chunking...")
+        chunks = chunk_documents(documents)
+        print(f"  -> {len(chunks)} chunks")
 
-    print("Extracting text...")
-    documents = extract_documents(paths)
+        print("Generating embeddings...")
+        chunks = embed_chunks(chunks)
 
-    print("Chunking...")
-    chunks = chunk_documents(documents)
-    print(f"  -> {len(chunks)} chunks")
+        print("Storing in ChromaDB...")
+        store_chunks(chunks)
 
-    print("Generating embeddings...")
-    chunks = embed_chunks(chunks)
+        print("\nPipeline complete. Test with:")
+        print('  from ingestion.ingest import retrieve')
+        print('  print(retrieve("retail analytics"))')
 
-    print("Storing in ChromaDB...")
-    store_chunks(chunks)
-
-    print("\nPipeline complete. Test with:")
-    print('  from ingestion.ingest import retrieve')
-    print('  print(retrieve("retail analytics"))')
+    finally:
+        if tmp_dir:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":

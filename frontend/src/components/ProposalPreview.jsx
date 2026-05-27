@@ -9,6 +9,7 @@ import {
   Inbox,
   Copy,
   Check,
+  ExternalLink,
 } from "lucide-react";
 
 const CopyButton = ({ text }) => {
@@ -90,9 +91,27 @@ const ProposalPreview = ({ data }) => (
             Generated Using
           </h3>
           <ul className="proposal-sources-list">
-            {data.sources.map((src) => (
-              <li key={src}>{src}</li>
-            ))}
+            {data.sources.map((src) => {
+              const name = typeof src === "string" ? src : src.name;
+              const url = typeof src === "string" ? null : src.url;
+              return (
+                <li key={name}>
+                  {url ? (
+                    <a
+                      href={url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="source-link"
+                    >
+                      {name}
+                      <ExternalLink size={11} />
+                    </a>
+                  ) : (
+                    name
+                  )}
+                </li>
+              );
+            })}
           </ul>
         </motion.div>
       )}
