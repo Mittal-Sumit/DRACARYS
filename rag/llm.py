@@ -1,6 +1,6 @@
 """
 Groq LLM client.
-Reads GROQ_API_KEY from the root .env file.
+Reads Groq API keys from the root .env file.
 Returns a structured dict (Task 8 — structured output).
 """
 
@@ -11,9 +11,15 @@ import os
 
 load_dotenv(Path(__file__).parent.parent / ".env")
 
-def get_groq_client():
+from rag.groq_keys import get_groq_api_keys, is_groq_limit_error
+
+
+def get_groq_client(api_key: str | None = None):
     from groq import Groq
-    api_key = os.getenv("GROQ_API_KEY")
+
+    if api_key is None:
+        keys = get_groq_api_keys()
+        api_key = keys[0] if keys else None
     if not api_key:
         raise ValueError("GROQ_API_KEY not found in .env file")
     return Groq(api_key=api_key)
@@ -38,18 +44,32 @@ def generate(
     """
     from rag.prompts import SYSTEM_PROMPT, build_user_message
 
-    client = get_groq_client()
     user_message = build_user_message(query, context_chunks)
 
-    response = client.chat.completions.create(
-        model=model,
-        temperature=temperature,
-        response_format={"type": "json_object"},
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_message},
-        ],
-    )
+    keys = get_groq_api_keys()
+    if not keys:
+        raise ValueError("GROQ_API_KEY not found in .env file")
+
+    last_limit_error: Exception | None = None
+    for api_key in keys:
+        client = get_groq_client(api_key)
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                temperature=temperature,
+                response_format={"type": "json_object"},
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": user_message},
+                ],
+            )
+            break
+        except Exception as exc:
+            if not is_groq_limit_error(exc):
+                raise
+            last_limit_error = exc
+    else:
+        raise RuntimeError("All configured Groq API keys are exhausted or rate-limited.") from last_limit_error
 
     content = response.choices[0].message.content
     try:

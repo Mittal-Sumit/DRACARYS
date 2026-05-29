@@ -21,7 +21,12 @@ import os
 import re
 from pathlib import Path
 
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    def load_dotenv(*args, **kwargs):
+        return False
+
 from pydantic import BaseModel, Field
 
 load_dotenv(Path(__file__).parent.parent / ".env")
@@ -29,16 +34,16 @@ load_dotenv(Path(__file__).parent.parent / ".env")
 from crewai import Agent, Crew, LLM, Process, Task
 from crewai.tools import BaseTool
 
+from rag.groq_keys import get_groq_api_keys, is_groq_limit_error
 from rag.retriever import retrieve
 
 _GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
-_GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 
 
-def _make_llm(temperature: float = 0.4) -> LLM:
+def _make_llm(api_key: str, temperature: float = 0.4) -> LLM:
     return LLM(
         model=f"groq/{_GROQ_MODEL}",
-        api_key=_GROQ_API_KEY,
+        api_key=api_key,
         temperature=temperature,
     )
 
@@ -226,8 +231,25 @@ def run_crew(query: str) -> dict:
         RuntimeError — if ChromaDB is empty (surfaces to the caller as 503)
     All other agent/LLM errors are caught by the caller and trigger fallback.
     """
-    llm_fast = _make_llm(temperature=0.3)
-    llm_writer = _make_llm(temperature=0.45)
+    keys = get_groq_api_keys()
+    if not keys:
+        raise ValueError("GROQ_API_KEY not found in .env file")
+
+    last_limit_error: Exception | None = None
+    for api_key in keys:
+        try:
+            return _run_crew_with_key(query, api_key)
+        except Exception as exc:
+            if not is_groq_limit_error(exc):
+                raise
+            last_limit_error = exc
+
+    raise RuntimeError("All configured Groq API keys are exhausted or rate-limited.") from last_limit_error
+
+
+def _run_crew_with_key(query: str, api_key: str) -> dict:
+    llm_fast = _make_llm(api_key, temperature=0.3)
+    llm_writer = _make_llm(api_key, temperature=0.45)
     kb_tool = SearchKBTool()
 
     planner = _build_planner(llm_fast)

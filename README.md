@@ -152,6 +152,8 @@ DEBUG=True
 SECRET_KEY=your-django-secret-key
 
 GROQ_API_KEY=your-groq-api-key
+GROQ_API_KEY2=your-backup-groq-api-key
+GROQ_API_KEY3=your-second-backup-groq-api-key
 GROQ_MODEL=llama-3.3-70b-versatile
 
 ALLOWED_HOSTS=localhost,127.0.0.1
