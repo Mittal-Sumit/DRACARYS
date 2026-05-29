@@ -1,7 +1,7 @@
 import { useRef, useCallback } from "react";
-import { Plus, Send } from "lucide-react";
+import { Globe, Plus, Send } from "lucide-react";
 
-const ChatBox = ({ onSend, disabled }) => {
+const ChatBox = ({ onSend, disabled, webSearch, onToggleWebSearch }) => {
   const inputRef = useRef(null);
 
   const handleSubmit = useCallback(
@@ -66,6 +66,18 @@ const ChatBox = ({ onSend, disabled }) => {
           aria-label="Generate proposal"
         >
           <Send size={24} />
+        </button>
+      </div>
+
+      <div className="chatbox-toolbar">
+        <button
+          type="button"
+          className={`web-toggle${webSearch ? " active" : ""}`}
+          onClick={() => onToggleWebSearch(!webSearch)}
+          title={webSearch ? "Web search on — click to disable" : "Web search off — click to enable"}
+        >
+          <Globe size={12} />
+          {webSearch ? "Web search on" : "Web search off"}
         </button>
       </div>
 

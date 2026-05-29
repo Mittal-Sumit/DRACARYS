@@ -2,6 +2,7 @@ import { useState } from "react";
 import { motion } from "motion/react";
 import {
   Briefcase,
+  Globe,
   Wrench,
   ClipboardList,
   Star,
@@ -112,6 +113,36 @@ const ProposalPreview = ({ data }) => (
                 </li>
               );
             })}
+          </ul>
+        </motion.div>
+      )}
+
+      {data.web_sources?.length > 0 && (
+        <motion.div
+          className="proposal-section-inset"
+          custom={(data.sections?.length ?? 0) + 1}
+          variants={sectionVariants}
+          initial="hidden"
+          animate="visible"
+        >
+          <h3 className="proposal-section-heading">
+            <Globe size={14} />
+            Market Research
+          </h3>
+          <ul className="proposal-sources-list">
+            {data.web_sources.map((src) => (
+              <li key={src.url || src.name}>
+                <a
+                  href={src.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="source-link web-source-link"
+                >
+                  {src.name}
+                  <ExternalLink size={11} />
+                </a>
+              </li>
+            ))}
           </ul>
         </motion.div>
       )}

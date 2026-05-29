@@ -23,9 +23,10 @@ class GenerateProposalView(APIView):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         query = serializer.validated_data["query"]
+        use_web_search = serializer.validated_data.get("use_web_search", False)
 
         try:
-            result = generate_proposal(query)
+            result = generate_proposal(query, use_web_search=use_web_search)
         except RuntimeError as e:
             return Response({"error": str(e)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
         except Exception:

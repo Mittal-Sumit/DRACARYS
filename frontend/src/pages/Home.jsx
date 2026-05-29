@@ -49,6 +49,7 @@ const Home = () => {
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [webSearch, setWebSearch] = useState(false);
   const chatEndRef = useRef(null);
 
   useEffect(() => {
@@ -86,7 +87,7 @@ const Home = () => {
     setError(null);
 
     try {
-      const result = await generateProposal(query);
+      const result = await generateProposal(query, webSearch);
 
       const assistantMsg = {
         id: Date.now() + 1,
@@ -101,7 +102,7 @@ const Home = () => {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [webSearch]);
 
   return (
     <div className="layout">
@@ -211,7 +212,12 @@ const Home = () => {
 
         {/* Floating input dock */}
         <div className="input-dock">
-          <ChatBox onSend={handleSend} disabled={loading} />
+          <ChatBox
+            onSend={handleSend}
+            disabled={loading}
+            webSearch={webSearch}
+            onToggleWebSearch={setWebSearch}
+          />
         </div>
       </main>
     </div>

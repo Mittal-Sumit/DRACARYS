@@ -37,10 +37,14 @@ groq>=0.9.0
 
 # Multi-agent pipeline
 crewai>=0.80.0
+litellm>=1.0.0
 
 # OneDrive / SharePoint integration (Microsoft Graph API)
 msal>=1.20.0
 requests>=2.31.0
+
+# Web search (Tavily — designed for LLM use)
+tavily-python>=0.3.0
 
 # Utilities
 python-dotenv>=1.0.0

@@ -8,13 +8,16 @@ const client = axios.create({
 const isConnectionError = (err) =>
   !err.response || err.response.status === 502 || err.response.status === 503;
 
-export async function generateProposal(query) {
+export async function generateProposal(query, useWebSearch = false) {
   const MAX_RETRIES = 2;
   const RETRY_DELAY_MS = 800;
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
-      const { data } = await client.post("/generate-proposal/", { query });
+      const { data } = await client.post("/generate-proposal/", {
+        query,
+        use_web_search: useWebSearch,
+      });
       return data;
     } catch (err) {
       if (isConnectionError(err) && attempt < MAX_RETRIES) {
