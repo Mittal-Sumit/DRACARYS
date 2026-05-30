@@ -953,6 +953,47 @@
   background: var(--error-bg);
 }
 
+.sidebar-guest {
+  padding: 14px 20px 20px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sidebar-signin-btn {
+  display: block;
+  text-align: center;
+  padding: 10px;
+  background: var(--primary);
+  color: #fff;
+  border-radius: 10px;
+  font-family: "Quicksand", sans-serif;
+  font-size: 14px;
+  font-weight: 700;
+  text-decoration: none;
+  transition: background 0.2s;
+}
+
+.sidebar-signin-btn:hover {
+  background: var(--primary-hover);
+  text-decoration: none;
+}
+
+.sidebar-signup-link {
+  display: block;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  text-decoration: none;
+  transition: color 0.2s;
+}
+
+.sidebar-signup-link:hover {
+  color: var(--text-main);
+}
+
 /* ========== Error ========== */
 
 .error-banner {

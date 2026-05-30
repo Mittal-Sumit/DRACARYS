@@ -5,6 +5,7 @@ from pathlib import Path
 from django.http import FileResponse, Http404
 from django.views import View
 from rest_framework import status
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -16,6 +17,7 @@ _ALLOWED_EXTENSIONS = {'.pdf', '.docx', '.doc'}
 
 
 class GenerateProposalView(APIView):
+    permission_classes = [AllowAny]
 
     def post(self, request):
         serializer = ProposalRequestSerializer(data=request.data)

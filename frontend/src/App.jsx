@@ -6,12 +6,6 @@ import Home from "./pages/Home";
 import Login from "./pages/Login";
 import Signup from "./pages/Signup";
 
-const ProtectedRoute = ({ children }) => {
-  const { user, bootstrapping } = useAuth();
-  if (bootstrapping) return null;
-  return user ? children : <Navigate to="/login" replace />;
-};
-
 const PublicOnlyRoute = ({ children }) => {
   const { user, bootstrapping } = useAuth();
   if (bootstrapping) return null;
@@ -20,7 +14,7 @@ const PublicOnlyRoute = ({ children }) => {
 
 const AppRoutes = () => (
   <Routes>
-    <Route path="/" element={<ProtectedRoute><Home /></ProtectedRoute>} />
+    <Route path="/" element={<Home />} />
     <Route path="/login" element={<PublicOnlyRoute><Login /></PublicOnlyRoute>} />
     <Route path="/signup" element={<PublicOnlyRoute><Signup /></PublicOnlyRoute>} />
     <Route path="*" element={<Navigate to="/" replace />} />

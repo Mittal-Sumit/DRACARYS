@@ -7,6 +7,7 @@ import {
   Search,
   LogOut,
 } from "lucide-react";
+import { Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 
 const NAV_ITEMS = [
@@ -25,7 +26,7 @@ const sidebarVariants = {
 };
 
 const Sidebar = () => {
-  const { user, logout } = useAuth();
+  const { user, logout, bootstrapping } = useAuth();
   return (
   <motion.aside
     className="sidebar"
@@ -100,17 +101,24 @@ const Sidebar = () => {
       </div>
     </div>
 
-    {/* User info + logout */}
-    {user && (
-      <div className="sidebar-user">
-        <div className="sidebar-user-info">
-          <p className="sidebar-user-name">{user.username}</p>
-          <p className="sidebar-user-email">{user.email}</p>
+    {/* User info / guest sign-in — hidden during bootstrap to avoid flicker */}
+    {!bootstrapping && (
+      user ? (
+        <div className="sidebar-user">
+          <div className="sidebar-user-info">
+            <p className="sidebar-user-name">{user.username}</p>
+            <p className="sidebar-user-email">{user.email}</p>
+          </div>
+          <button className="sidebar-logout-btn" onClick={logout} title="Sign out">
+            <LogOut size={16} />
+          </button>
         </div>
-        <button className="sidebar-logout-btn" onClick={logout} title="Sign out">
-          <LogOut size={16} />
-        </button>
-      </div>
+      ) : (
+        <div className="sidebar-guest">
+          <Link to="/login" className="sidebar-signin-btn">Sign in</Link>
+          <Link to="/signup" className="sidebar-signup-link">Create account</Link>
+        </div>
+      )
     )}
   </motion.aside>
   );
