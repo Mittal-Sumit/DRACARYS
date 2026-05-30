@@ -23,7 +23,6 @@ client.interceptors.request.use((config) => {
 client.interceptors.response.use(
   (res) => res,
   async (error) => {
-    // Only attempt refresh on 401, and only once per request
     if (error.response?.status !== 401 || error.config._retry) {
       return Promise.reject(error);
     }
@@ -61,7 +60,7 @@ client.interceptors.response.use(
 const isConnectionError = (err) =>
   !err.response || err.response.status === 502 || err.response.status === 503;
 
-export async function generateProposal(query, useWebSearch = false) {
+export async function generateProposal(query, useWebSearch = false, conversationId = null) {
   const MAX_RETRIES = 2;
   const RETRY_DELAY_MS = 800;
 
@@ -70,6 +69,7 @@ export async function generateProposal(query, useWebSearch = false) {
       const { data } = await client.post("/generate-proposal/", {
         query,
         use_web_search: useWebSearch,
+        conversation_id: conversationId,
       });
       return data;
     } catch (err) {
@@ -80,4 +80,18 @@ export async function generateProposal(query, useWebSearch = false) {
       throw err;
     }
   }
+}
+
+export async function getConversations() {
+  const { data } = await client.get("/conversations/");
+  return data;
+}
+
+export async function getConversation(id) {
+  const { data } = await client.get(`/conversations/${id}/`);
+  return data;
+}
+
+export async function deleteConversation(id) {
+  await client.delete(`/conversations/${id}/`);
 }

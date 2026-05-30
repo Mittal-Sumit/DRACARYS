@@ -12,7 +12,6 @@ export const AuthProvider = ({ children }) => {
     setUser(null);
     setAccessToken(null);
     localStorage.removeItem(SESSION_KEY);
-    localStorage.removeItem("dracarys_messages");
   }, []);
 
   useEffect(() => {
