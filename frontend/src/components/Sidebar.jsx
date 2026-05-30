@@ -5,7 +5,9 @@ import {
   Settings,
   Trophy,
   Search,
+  LogOut,
 } from "lucide-react";
+import { useAuth } from "../context/AuthContext";
 
 const NAV_ITEMS = [
   { icon: MessageCircle, label: "Chat", active: true },
@@ -22,7 +24,9 @@ const sidebarVariants = {
   },
 };
 
-const Sidebar = () => (
+const Sidebar = () => {
+  const { user, logout } = useAuth();
+  return (
   <motion.aside
     className="sidebar"
     variants={sidebarVariants}
@@ -95,7 +99,21 @@ const Sidebar = () => (
         </div>
       </div>
     </div>
+
+    {/* User info + logout */}
+    {user && (
+      <div className="sidebar-user">
+        <div className="sidebar-user-info">
+          <p className="sidebar-user-name">{user.username}</p>
+          <p className="sidebar-user-email">{user.email}</p>
+        </div>
+        <button className="sidebar-logout-btn" onClick={logout} title="Sign out">
+          <LogOut size={16} />
+        </button>
+      </div>
+    )}
   </motion.aside>
-);
+  );
+};
 
 export default Sidebar;

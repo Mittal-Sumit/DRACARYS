@@ -6,6 +6,7 @@
 # Django backend
 Django==6.0.5
 djangorestframework==3.17.1
+djangorestframework-simplejwt>=5.3.0
 django-cors-headers==4.9.0
 asgiref==3.11.1
 gunicorn==26.0.0
