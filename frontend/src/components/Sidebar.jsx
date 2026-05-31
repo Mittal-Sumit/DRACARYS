@@ -1,28 +1,16 @@
 import { motion } from "motion/react";
-import { MessageCircle, Archive, Settings, LogOut, Plus, Trash2 } from "lucide-react";
+import { LogOut, Plus, Trash2 } from "lucide-react";
 import { Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 
-const NAV_ITEMS = [
-  { icon: MessageCircle, label: "Chat", active: true },
-  { icon: Archive, label: "Archive", active: false },
-  { icon: Settings, label: "Settings", active: false },
-];
-
 const sidebarVariants = {
   hidden: { x: -20, opacity: 0 },
-  visible: {
-    x: 0,
-    opacity: 1,
-    transition: { duration: 0.4, ease: "easeOut" },
-  },
+  visible: { x: 0, opacity: 1, transition: { duration: 0.4, ease: "easeOut" } },
 };
 
 const formatDate = (dateStr) => {
   const date = new Date(dateStr);
-  const now = new Date();
-  const diffMs = now - date;
-  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+  const diffDays = Math.floor((Date.now() - date) / 86400000);
   if (diffDays === 0) return "Today";
   if (diffDays === 1) return "Yesterday";
   if (diffDays < 7) return `${diffDays}d ago`;
@@ -45,58 +33,31 @@ const Sidebar = ({
       initial="hidden"
       animate="visible"
     >
-      {/* Avatar */}
-      <div className="sidebar-avatar-section">
-        <div className="blob-avatar">
-          <svg
-            className="blob-face"
-            fill="none"
-            viewBox="0 0 64 64"
-            xmlns="http://www.w3.org/2000/svg"
-          >
+      {/* Compact header */}
+      <div className="sidebar-header">
+        <div className="sidebar-blob-sm">
+          <svg fill="none" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
             <circle cx="20" cy="24" fill="currentColor" r="5" />
             <circle cx="44" cy="24" fill="currentColor" r="5" />
-            <path
-              d="M22 40C22 40 28 46 32 46C36 46 42 40 42 40"
-              stroke="currentColor"
-              strokeLinecap="round"
-              strokeWidth="4"
-            />
+            <path d="M22 40C22 40 28 46 32 46C36 46 42 40 42 40" stroke="currentColor" strokeLinecap="round" strokeWidth="4" />
           </svg>
         </div>
-        <h1 className="sidebar-title">Dracarys</h1>
-        <div className="sidebar-status">
-          <span className="status-dot" />
-          Ready to pitch
+        <div className="sidebar-header-text">
+          <h1 className="sidebar-title">Dracarys</h1>
+          <div className="sidebar-status">
+            <span className="status-dot" />
+            Ready to pitch
+          </div>
         </div>
       </div>
-
-      {/* Navigation */}
-      <nav className="sidebar-nav">
-        {NAV_ITEMS.map(({ icon: Icon, label, active }) => (
-          <a
-            key={label}
-            className={`sidebar-nav-link ${active ? "active" : ""}`}
-            href="#"
-            onClick={(e) => e.preventDefault()}
-          >
-            <Icon size={22} className={`nav-icon ${active ? "fill-current" : ""}`} />
-            {label}
-          </a>
-        ))}
-      </nav>
 
       {/* Conversation history — authenticated only */}
       {!bootstrapping && user && (
         <div className="sidebar-conversations">
           <div className="sidebar-conversations-header">
             <span className="sidebar-conversations-label">Conversations</span>
-            <button
-              className="new-chat-btn"
-              onClick={onNewChat}
-              title="New chat"
-            >
-              <Plus size={15} />
+            <button className="new-chat-btn" onClick={onNewChat} title="New chat">
+              <Plus size={14} />
               New
             </button>
           </div>
@@ -108,7 +69,7 @@ const Sidebar = ({
               conversations.map((conv) => (
                 <div
                   key={conv.id}
-                  className={`conv-item ${conv.id === activeConversationId ? "active" : ""}`}
+                  className={`conv-item${conv.id === activeConversationId ? " active" : ""}`}
                   onClick={() => onSelectConversation(conv.id)}
                 >
                   <div className="conv-item-body">
@@ -118,7 +79,7 @@ const Sidebar = ({
                   <button
                     className="conv-delete-btn"
                     onClick={(e) => { e.stopPropagation(); onDeleteConversation(conv.id); }}
-                    title="Delete conversation"
+                    title="Delete"
                   >
                     <Trash2 size={13} />
                   </button>
@@ -129,7 +90,7 @@ const Sidebar = ({
         </div>
       )}
 
-      {/* Guest sign-in prompt — shown only while not bootstrapping and not logged in */}
+      {/* Guest sign-in */}
       {!bootstrapping && !user && (
         <div className="sidebar-guest">
           <Link to="/login" className="sidebar-signin-btn">Sign in</Link>
