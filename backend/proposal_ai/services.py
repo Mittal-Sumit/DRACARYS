@@ -11,12 +11,22 @@ from rag.llm import generate
 _USE_CREW_AI = os.getenv("USE_CREW_AI", "true").lower() == "true"
 
 
-def _build_sources(names: list[str]) -> list[dict]:
-    """Convert KB source display names to {name, url} objects for frontend linking."""
+def _build_sources(sources: list) -> list[dict]:
+    """Convert KB sources to {name, url} objects for frontend linking.
+
+    Accepts either strings (display names) or dicts with {name, file}.
+    Uses the file field directly when available so any ingested document
+    gets a working link — even if it's not registered in doc_metadata.py.
+    """
     from ingestion.doc_metadata import get_filename_by_display_name
     result = []
-    for name in names:
-        filename = get_filename_by_display_name(name)
+    for src in sources:
+        if isinstance(src, dict):
+            name = src["name"]
+            filename = src.get("file") or get_filename_by_display_name(name)
+        else:
+            name = src
+            filename = get_filename_by_display_name(name)
         result.append({
             "name": name,
             "url": f"/api/docs/{filename}" if filename else None,
@@ -80,13 +90,11 @@ def _generate_simple(query: str) -> dict:
     chunks = _retrieve_multi_angle(query)
     result = generate(query, chunks)
     sections = result.get("sections", [])
-    has_headings = any(s.get("heading") for s in sections)
+    seen: set[str] = set()
     sources = []
-    if has_headings:
-        seen: set[str] = set()
-        for chunk in chunks:
-            name = chunk.get("display_name") or chunk["file"]
-            if name not in seen:
-                sources.append(name)
-                seen.add(name)
+    for chunk in chunks:
+        name = chunk.get("display_name") or chunk["file"]
+        if name not in seen:
+            sources.append({"name": name, "file": chunk["file"]})
+            seen.add(name)
     return {"sections": sections, "sources": _build_sources(sources), "web_sources": []}

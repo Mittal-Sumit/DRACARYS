@@ -40,13 +40,13 @@ const ChatBox = ({ onSend, disabled, webSearch, onToggleWebSearch }) => {
           <textarea
             ref={inputRef}
             className="chatbox-input"
-            placeholder="Describe your client's need or industry..."
+            placeholder="Ask about our projects, clients, capabilities, or request a pitch..."
             disabled={disabled}
             autoFocus
             onInput={handleInput}
             onKeyDown={handleKeyDown}
             rows={1}
-            aria-label="Describe your client's need"
+            aria-label="Ask Dracarys"
           />
         </div>
 
@@ -54,7 +54,7 @@ const ChatBox = ({ onSend, disabled, webSearch, onToggleWebSearch }) => {
           className="chatbox-send"
           type="submit"
           disabled={disabled}
-          aria-label="Generate proposal"
+          aria-label="Send message"
         >
           <Send size={20} />
         </button>

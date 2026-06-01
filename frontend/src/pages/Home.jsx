@@ -20,10 +20,10 @@ const WELCOME_MSG = {
 };
 
 const PROMPT_CHIPS = [
-  "Draft a proposal for a retail FMCG client",
+  "What FMCG projects have we delivered?",
   "What Azure experience do we have?",
-  "Pharma data platform pitch",
-  "Supply chain analytics capabilities",
+  "Generate a pitch for a pharma supply chain client",
+  "Explain our data warehousing capabilities",
 ];
 
 const CONVERSATIONAL_RE = /^(hi+|hello|hey|howdy|yo|sup|good\s+morning|good\s+afternoon|good\s+evening|thanks|thank\s+you|ok+|okay|yes|no+|bye|great|cool|nice|test|ping|check)[\s!?.]*$/i;
@@ -124,7 +124,7 @@ const Home = () => {
         {
           id: Date.now() + 1,
           role: "assistant",
-          text: "I'm best at generating proposals! Describe the client's need or industry — e.g. \"supply chain dashboard for a retail FMCG client\" — and I'll draft something grounded in our past work.",
+          text: "I'm here to help with your sales conversations! Ask me about our past projects, industry experience, or technical capabilities — or ask me to generate a pitch for a specific client.",
         },
       ]);
       return;
@@ -156,7 +156,7 @@ const Home = () => {
       }
     } catch (err) {
       const msg =
-        err.response?.data?.error || "Failed to generate proposal. Please try again.";
+        err.response?.data?.error || "Failed to get a response. Please try again.";
       setError(msg);
     } finally {
       setLoading(false);

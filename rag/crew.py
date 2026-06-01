@@ -74,7 +74,7 @@ class SearchKBTool(BaseTool):
         "Call this multiple times with different queries to explore different angles."
     )
     args_schema: type[BaseModel] = _SearchInput
-    found_sources: list[str] = Field(default_factory=list)
+    found_sources: list[dict] = Field(default_factory=list)  # [{name, file}]
 
     def _run(self, query: str) -> str:
         try:
@@ -89,8 +89,8 @@ class SearchKBTool(BaseTool):
         for chunk in chunks:
             display = chunk.get("display_name") or chunk["file"]
             score = chunk.get("score", 0.0)
-            if display not in self.found_sources:
-                self.found_sources.append(display)
+            if not any(s["name"] == display for s in self.found_sources):
+                self.found_sources.append({"name": display, "file": chunk["file"]})
             lines.append(f"[Source: {display} | relevance: {score:.3f}]")
             lines.append(chunk["text"][:600].strip())
             lines.append("")
@@ -144,15 +144,15 @@ class SearchWebTool(BaseTool):
 
 def _build_planner(llm: LLM) -> Agent:
     return Agent(
-        role="Pre-Sales Research Strategist",
+        role="Sales Intelligence Strategist",
         goal=(
-            "Analyse the user's request and produce 3–4 targeted search queries "
-            "that will surface the most relevant past projects and capabilities "
+            "Analyse the user's question and produce 3–4 targeted search queries "
+            "that will surface the most relevant past projects, capabilities, and experience "
             "from the knowledge base."
         ),
         backstory=(
-            "You are a pre-sales strategist who knows exactly how to find relevant past work. "
-            "You break requests into focused search angles: industry experience, technical capability, "
+            "You are a sales intelligence strategist who knows exactly how to find relevant past work. "
+            "You break questions into focused search angles: industry experience, technical capability, "
             "client outcomes, and specific cloud/platform matches. "
             "You output a JSON search plan and nothing else."
         ),
@@ -190,16 +190,18 @@ def _build_researcher(llm: LLM, tools: list) -> Agent:
 
 def _build_writer(llm: LLM) -> Agent:
     return Agent(
-        role="Senior Proposal Writer",
+        role="Sales Intelligence Assistant",
         goal=(
-            "Using only the research brief, write a compelling, specific response. "
+            "Using only the research brief, answer the user's question directly and accurately. "
             "Output a valid JSON object with the exact schema specified."
         ),
         backstory=(
-            "You are a senior proposal writer at a data & analytics consulting firm. "
-            "You write as 'we'. You cite specific project names, technologies, and outcomes. "
-            "You never use filler phrases. You write comprehensive, structured responses. "
-            "You never invent clients, metrics, or technologies not found in the research brief."
+            "You are a knowledgeable sales intelligence assistant at a data & analytics consulting firm. "
+            "You have deep familiarity with every past client project and delivery. "
+            "You answer like a senior solutions consultant — directly, specifically, grounded in real work. "
+            "You write as 'we' when referring to internal experience. "
+            "You cite specific client names, technologies, and outcomes. "
+            "You never use filler phrases. You never invent facts not in the research brief."
         ),
         llm=llm,
         allow_delegation=False,
@@ -281,54 +283,58 @@ def _research_task(researcher: Agent, context: list[Task], use_web_search: bool 
 def _write_task(query: str, writer: Agent, context: list[Task], use_web_search: bool = False) -> Task:
     base_rules = (
         "  1. Never invent clients, projects, metrics, or technologies not in the brief.\n"
-        "  2. No filler: avoid 'leveraging', 'strategic', 'well-positioned'.\n"
-        "  3. Be specific — cite project names, platforms, outcomes, metrics.\n"
-        "  4. Comprehensive answers beat brief ones. Do not truncate proposals.\n"
+        "  2. No filler: avoid 'leveraging', 'strategic', 'well-positioned', 'robust'.\n"
+        "  3. Be specific — cite client names, platforms, outcomes, metrics.\n"
+        "  4. Answer what was actually asked. Don't expand into a full pitch unless explicitly requested.\n"
+        "  5. Depth matters — give a complete, substantive answer. Don't truncate.\n"
+        "  6. Use markdown in `content` to aid readability: **bold** for client names, technology names, and key metrics; "
+        "bullet lists (- item) for enumerable items; numbered lists (1. item) for steps or sequences; "
+        "blank line between paragraphs; > blockquote for a key highlight or standout fact. "
+        "Do NOT use backtick code formatting (`...`) for product names, technology names, or project names — "
+        "only use backticks for actual code: SQL snippets, CLI commands, or config values. "
+        "Format purposefully — only where it genuinely helps the reader.\n"
+    )
+
+    section_rules = (
+        "Structure your response:\n"
+        "  • Direct question: 1 section, heading=null, answer it fully\n"
+        "  • Multi-part answer: 2–3 sections with concise descriptive headings\n"
+        "  • Explicit pitch/proposal request: 3–4 sections (e.g. 'Our Experience', 'Technical Approach', 'Why Us')\n"
+        "  Default to fewer sections — only add one when the content genuinely warrants it.\n\n"
     )
 
     if use_web_search:
         source_rules = (
-            "\nSOURCE ATTRIBUTION RULES (non-negotiable):\n"
-            "  KB BRIEF → first-person claims only: 'We delivered X', 'We built Y for Client Z'.\n"
-            "  WEB BRIEF → always attributed: 'According to [Source Name]', 'Industry data shows', "
-            "'Research from [Source] indicates'. Never write 'we' using web data.\n"
-            "  Never use web data to support, inflate, or contradict KB claims.\n"
-            "  Web context belongs only in sections about market landscape, industry context, "
-            "or client background — never in sections about our capabilities or past work.\n"
-            "  If web and KB data conflict on any point, use KB and ignore the web data.\n"
+            "\nSOURCE ATTRIBUTION (non-negotiable):\n"
+            "  KB brief → first-person only: 'We delivered X', 'In our work with Client Y, we...'\n"
+            "  Web brief → always attributed inline: 'According to [Source Name]', 'Research from [Source] shows'\n"
+            "  Never use 'we' for web-sourced facts. Never blend KB and web claims in the same sentence.\n"
+            "  If KB and web data conflict, use KB and ignore web.\n"
         )
-        sources_instruction = (
-            "  5. 'sources': list only internal KB document names cited (not web URLs).\n"
-        )
+        sources_instruction = "  6. 'sources': list only internal KB document names cited.\n"
     else:
         source_rules = ""
-        sources_instruction = "  5. Sources: list only source document names actually cited.\n"
+        sources_instruction = "  6. 'sources': list only source document names actually cited.\n"
 
     description = (
-        f'Original user request: "{query}"\n\n'
-        "Using ONLY the research brief above, write the response.\n\n"
-        "Choose response type based on the request:\n"
-        "  PROPOSAL (e.g. 'generate a proposal', 'draft a pitch', 'write a proposal for X'):\n"
-        "    → 3–5 sections. Choose headings that fit THIS specific request.\n"
-        "    → Examples: 'Our Approach', 'Relevant Experience', 'Technical Architecture',\n"
-        "       'Why We're the Right Partner', 'What We've Delivered'\n"
-        "  QUESTION (e.g. 'what experience do we have with X', 'have we done Y work'):\n"
-        "    → 1–2 sections answering directly with specific evidence\n"
-        "  CONVERSATIONAL (e.g. 'what can you do', 'tell me about the firm'):\n"
-        "    → 1–2 short paragraphs. Set heading to null.\n\n"
-        "Rules:\n"
+        f'User question: "{query}"\n\n'
+        "Using ONLY the research brief above, answer the user's question.\n\n"
+        + section_rules
+        + "Rules:\n"
         + base_rules
         + sources_instruction
         + source_rules
-        + "\nOutput ONLY this JSON (no markdown code fences, no text outside the JSON):\n"
-        '{"sections": [{"heading": "Title or null", "content": "..."}], '
-        '"sources": ["Source Name 1", "Source Name 2"]}'
+        + "\nYOUR ENTIRE RESPONSE MUST BE A SINGLE JSON OBJECT. "
+        "No preamble, no explanation, no text before or after. Start with { and end with }.\n"
+        '{"sections": [{"heading": "Title or null", "content": "markdown content"}], '
+        '"sources": ["Source Name 1"]}'
     )
 
     return Task(
         description=description,
         expected_output=(
-            'JSON: {"sections": [{"heading": "string or null", "content": "string"}], '
+            'A single JSON object and nothing else: '
+            '{"sections": [{"heading": "string or null", "content": "string"}], '
             '"sources": ["string"]}'
         ),
         agent=writer,
@@ -386,11 +392,17 @@ def _parse_result(result, found_sources: list[str], web_tool=None) -> dict:
     parsed = _extract_json(raw)
     if parsed and "sections" in parsed:
         sections = parsed["sections"]
-        has_headings = any(s.get("heading") for s in sections)
 
-        # Prefer sources reported by the writer; fall back to KB tool tracking
-        writer_sources = parsed.get("sources") or []
-        sources = writer_sources if writer_sources else (found_sources if has_headings else [])
+        # Prefer sources reported by the writer; fall back to KB tool tracking.
+        # Always show sources — even heading=null answers come from the KB.
+        # Map writer source names → {name, file} using KB tool tracking so URLs work
+        # for any document, regardless of whether it's registered in doc_metadata.py.
+        writer_source_names = parsed.get("sources") or []
+        if writer_source_names:
+            found_map = {s["name"]: s for s in found_sources}
+            sources = [found_map.get(n, {"name": n, "file": None}) for n in writer_source_names]
+        else:
+            sources = found_sources
 
         return {"sections": sections, "sources": sources, "web_sources": web_sources}
 
@@ -402,31 +414,96 @@ def _parse_result(result, found_sources: list[str], web_tool=None) -> dict:
     }
 
 
-def _extract_json(text: str) -> dict | None:
-    """Try three strategies to find valid JSON in LLM output."""
-    text = text.strip()
+def _fix_json_newlines(text: str) -> str:
+    """Escape unescaped control characters inside JSON string values.
 
-    # 1. The whole output is valid JSON
+    LLMs often write literal newlines/tabs in JSON string values (which is
+    invalid JSON). This walks the text character-by-character, tracking
+    whether we're inside a string, and escapes any raw control chars it finds.
+    """
+    result = []
+    in_string = False
+    i = 0
+    while i < len(text):
+        c = text[i]
+        if c == "\\" and in_string:
+            # Already-escaped sequence — copy both chars verbatim
+            result.append(c)
+            i += 1
+            if i < len(text):
+                result.append(text[i])
+        elif c == '"':
+            in_string = not in_string
+            result.append(c)
+        elif in_string and c == "\n":
+            result.append("\\n")
+        elif in_string and c == "\r":
+            result.append("\\r")
+        elif in_string and c == "\t":
+            result.append("\\t")
+        else:
+            result.append(c)
+        i += 1
+    return "".join(result)
+
+
+def _try_parse(candidate: str) -> dict | None:
+    """Try json.loads on the raw candidate, then on the newline-fixed version."""
     try:
-        return json.loads(text)
+        return json.loads(candidate)
     except json.JSONDecodeError:
         pass
+    try:
+        return json.loads(_fix_json_newlines(candidate))
+    except json.JSONDecodeError:
+        return None
 
-    # 2. JSON wrapped in markdown code fences (```json ... ```)
-    fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+
+def _extract_json(text: str) -> dict | None:
+    """Find and parse a JSON object containing a 'sections' key from LLM output.
+
+    Tries four strategies in order, each also attempting a newline-repair pass.
+    The most common failure mode: LLM writes literal newlines inside JSON string
+    values (markdown bullet points / paragraphs), making the JSON technically
+    invalid. _fix_json_newlines handles this without any extra dependency.
+    """
+    text = text.strip()
+
+    # 1. Whole output is valid JSON (or fixable JSON)
+    result = _try_parse(text)
+    if result is not None:
+        return result
+
+    # 2. JSON in markdown code fences
+    fence = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
     if fence:
-        try:
-            return json.loads(fence.group(1))
-        except json.JSONDecodeError:
-            pass
+        result = _try_parse(fence.group(1).strip())
+        if result is not None:
+            return result
 
-    # 3. Find the outermost {...} block — first { to matching }
+    # 3. Brace-match from "sections" key — immune to { } chars in preceding prose
+    idx = text.find('"sections"')
+    if idx != -1:
+        brace_start = text.rfind("{", 0, idx)
+        if brace_start != -1:
+            depth = 0
+            for i, ch in enumerate(text[brace_start:]):
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        result = _try_parse(text[brace_start : brace_start + i + 1])
+                        if result is not None:
+                            return result
+                        break  # matched brace found but still invalid — stop trying
+
+    # 4. Last resort: first { to last }
     start = text.find("{")
     end = text.rfind("}") + 1
     if start != -1 and end > start:
-        try:
-            return json.loads(text[start:end])
-        except json.JSONDecodeError:
-            pass
+        result = _try_parse(text[start:end])
+        if result is not None:
+            return result
 
     return None

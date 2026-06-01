@@ -77,7 +77,15 @@ class ConversationDetailView(APIView):
 
     def get(self, request, pk):
         conv = get_object_or_404(Conversation, pk=pk, user=request.user)
-        return Response(ConversationDetailSerializer(conv).data)
+        data = ConversationDetailSerializer(conv).data
+        # Ensure sources in loaded messages always have URLs — handles old DB rows
+        # that stored plain string source names before the {name, url} format was introduced.
+        from .services import _build_sources
+        for msg in data.get("messages", []):
+            pd = msg.get("proposal_data")
+            if pd and isinstance(pd.get("sources"), list):
+                pd["sources"] = _build_sources(pd["sources"])
+        return Response(data)
 
     def delete(self, request, pk):
         conv = get_object_or_404(Conversation, pk=pk, user=request.user)

@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { motion } from "motion/react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   Briefcase,
   Globe,
@@ -75,10 +77,14 @@ const ProposalPreview = ({ data }) => (
                 <h3 className="proposal-card-title">{section.heading}</h3>
                 <CopyButton text={section.content} />
               </div>
-              <p className="proposal-card-body">{section.content}</p>
+              <div className="proposal-card-body">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{section.content}</ReactMarkdown>
+              </div>
             </>
           ) : (
-            <p className="proposal-card-body plain">{section.content}</p>
+            <div className="proposal-card-body plain">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{section.content}</ReactMarkdown>
+            </div>
           )}
         </motion.div>
       );
@@ -96,7 +102,7 @@ const ProposalPreview = ({ data }) => (
           <div className="proposal-sources-group">
             <span className="proposal-sources-label">
               <Inbox size={11} />
-              Sources
+              From our work
             </span>
             <div className="proposal-pills">
               {data.sources.map((src) => {
