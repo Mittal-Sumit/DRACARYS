@@ -75,10 +75,13 @@ class SearchKBTool(BaseTool):
     )
     args_schema: type[BaseModel] = _SearchInput
     found_sources: list[dict] = Field(default_factory=list)  # [{name, file}]
+    n_results: int = Field(default=8)
+    max_per_file: int = Field(default=3)
+    text_limit: int = Field(default=1000)
 
     def _run(self, query: str) -> str:
         try:
-            chunks = retrieve(query, n_results=8, max_per_file=3)
+            chunks = retrieve(query, n_results=self.n_results, max_per_file=self.max_per_file)
         except RuntimeError as exc:
             raise  # propagate empty-DB error
 
@@ -92,7 +95,7 @@ class SearchKBTool(BaseTool):
             if not any(s["name"] == display for s in self.found_sources):
                 self.found_sources.append({"name": display, "file": chunk["file"]})
             lines.append(f"[Source: {display} | relevance: {score:.3f}]")
-            lines.append(chunk["text"][:600].strip())
+            lines.append(chunk["text"][:self.text_limit].strip())
             lines.append("")
         return "\n".join(lines)
 
@@ -138,6 +141,18 @@ class SearchWebTool(BaseTool):
             lines.append("")
 
         return "\n".join(lines) or "No web results found."
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _is_pitch_request(query: str) -> bool:
+    """Detect complex pitch/proposal requests that need full structured multi-section output."""
+    q = query.lower()
+    return any(kw in q for kw in [
+        "pitch", "proposal", "solution approach", "implementation roadmap",
+        "high-level architecture", "business outcome", "create a client",
+        "generate a pitch", "write a pitch", "prepare a", "develop a pitch",
+    ])
 
 
 # ── Agents ────────────────────────────────────────────────────────────────────
@@ -212,24 +227,60 @@ def _build_writer(llm: LLM) -> Agent:
 # ── Tasks ─────────────────────────────────────────────────────────────────────
 
 def _plan_task(query: str, planner: Agent) -> Task:
+    pitch = _is_pitch_request(query)
+    if pitch:
+        strategy = (
+            "This is a complex pitch or proposal request. Generate 5–6 targeted search queries:\n"
+            "  • One query for EACH major topic or section explicitly named in the request "
+            "(e.g. solution approach, architecture, governance, implementation roadmap, "
+            "business outcomes, relevant experience).\n"
+            "  • One query specifically for pharma/healthcare industry case studies and delivery experience.\n"
+            "  • One query targeting the specific source systems and cloud platform mentioned "
+            "(e.g. SAP, LIMS, MES, Salesforce, Azure, regulatory data).\n"
+            "  • One query for company capabilities, credentials, and delivery differentiators.\n"
+        )
+        count_hint = "5–6"
+    else:
+        strategy = "Generate 3–4 targeted search queries to find the most relevant content.\n"
+        count_hint = "3–4"
+
     return Task(
         description=(
             f'User request: "{query}"\n\n'
-            "Generate 3–4 targeted search queries to find the most relevant content.\n"
-            "Think about:\n"
-            "  1. The industry or domain (e.g. pharma, FMCG, banking, automotive, healthcare)\n"
-            "  2. Technical capabilities needed (e.g. data warehouse, ML, BI, data engineering)\n"
-            "  3. Similar past outcomes (e.g. demand forecasting, predictive maintenance)\n"
-            "  4. Cloud or platform mentioned (e.g. Azure, AWS, GCP, Microsoft Fabric)\n\n"
+            + strategy
+            + "\nFor every query, consider:\n"
+            "  1. Industry or domain (e.g. pharma, FMCG, banking, automotive, healthcare)\n"
+            "  2. Technical capabilities (e.g. data warehouse, ML, BI, data engineering)\n"
+            "  3. Source systems named (e.g. SAP, Salesforce, LIMS, MES, Veeva, regulatory data)\n"
+            "  4. Cloud platform and specific services (e.g. Azure, AWS, GCP, Microsoft Fabric)\n"
+            "  5. Compliance, governance, or regulatory requirements\n"
+            "  6. Measurable outcomes (e.g. supply chain visibility, compliance reporting, KPI unification)\n\n"
             "Output ONLY this JSON — no other text:\n"
-            '{"queries": ["query 1", "query 2", "query 3"]}'
+            '{"queries": ["query 1", "query 2", ...]}'
         ),
-        expected_output='A JSON object: {"queries": ["...", "...", "..."]}',
+        expected_output=f'A JSON object with {count_hint} queries: {{"queries": ["...", ...]}}',
         agent=planner,
     )
 
 
-def _research_task(researcher: Agent, context: list[Task], use_web_search: bool = False) -> Task:
+def _research_task(
+    researcher: Agent,
+    context: list[Task],
+    use_web_search: bool = False,
+    is_pitch: bool = False,
+) -> Task:
+    pitch_kb_extra = (
+        "\n\nThis is a pitch/proposal request — extract with maximum depth. "
+        "For EACH case study found:\n"
+        "  • Client name, industry, country/geography, and scale\n"
+        "  • Exact technologies and cloud services used (name every one)\n"
+        "  • Specific measurable outcomes — copy percentages, volumes, and timelines verbatim from the source\n"
+        "  • Which of the user's requested pitch sections (solution approach, architecture, governance, "
+        "roadmap, outcomes, relevant experience) this case study most directly supports\n"
+        "Do not paraphrase or summarise — extract actual facts. "
+        "Explicitly flag any requested section for which the KB had no relevant content."
+    ) if is_pitch else ""
+
     if use_web_search:
         description = (
             "Run each search query from the plan using BOTH search_knowledge_base AND search_web. "
@@ -240,7 +291,8 @@ def _research_task(researcher: Agent, context: list[Task], use_web_search: bool 
             "  • Each relevant project — client name, industry, what was built, outcomes, metrics\n"
             "  • Technologies, cloud platforms, timelines, scale\n"
             "  • Source document names\n"
-            "If no KB results found, write: No relevant internal projects found.\n\n"
+            "If no KB results found, write: No relevant internal projects found.\n"
+            + pitch_kb_extra + "\n\n"
             "=== WEB RESEARCH BRIEF ===\n"
             "Context from search_web ONLY. Cover:\n"
             "  • Market size, industry trends, benchmarks\n"
@@ -266,6 +318,7 @@ def _research_task(researcher: Agent, context: list[Task], use_web_search: bool 
             "  • Any specific timelines, scale, or volume details\n"
             "  • Which source documents contained the most relevant information\n\n"
             "Be exhaustive. Every specific fact in the sources should appear in your brief."
+            + pitch_kb_extra
         )
         expected_output = (
             "A structured research brief covering all relevant projects, technologies, "
@@ -281,12 +334,16 @@ def _research_task(researcher: Agent, context: list[Task], use_web_search: bool 
 
 
 def _write_task(query: str, writer: Agent, context: list[Task], use_web_search: bool = False) -> Task:
+    is_pitch = _is_pitch_request(query)
+
     base_rules = (
         "  1. Never invent clients, projects, metrics, or technologies not in the brief.\n"
-        "  2. No filler: avoid 'leveraging', 'strategic', 'well-positioned', 'robust'.\n"
-        "  3. Be specific — cite client names, platforms, outcomes, metrics.\n"
-        "  4. Answer what was actually asked. Don't expand into a full pitch unless explicitly requested.\n"
-        "  5. Depth matters — give a complete, substantive answer. Don't truncate.\n"
+        "  2. No filler: avoid 'leveraging', 'strategic', 'well-positioned', 'robust', 'seamlessly', 'end-to-end'.\n"
+        "  3. Be specific — cite exact client names, platforms, measurable outcomes, and metrics from the brief. "
+        "Generic statements like 'we have pharma experience' without a named client are not acceptable.\n"
+        "  4. For pitches: connect each case study outcome directly to the prospect's stated challenge. "
+        "Don't just describe what you did — explain why it applies to this specific client.\n"
+        "  5. Depth matters — develop each point fully. Don't truncate or summarise where the brief has detail.\n"
         "  6. Use markdown in `content` to aid readability: **bold** for client names, technology names, and key metrics; "
         "bullet lists (- item) for enumerable items; numbered lists (1. item) for steps or sequences; "
         "blank line between paragraphs; > blockquote for a key highlight or standout fact. "
@@ -295,13 +352,27 @@ def _write_task(query: str, writer: Agent, context: list[Task], use_web_search: 
         "Format purposefully — only where it genuinely helps the reader.\n"
     )
 
-    section_rules = (
-        "Structure your response:\n"
-        "  • Direct question: 1 section, heading=null, answer it fully\n"
-        "  • Multi-part answer: 2–3 sections with concise descriptive headings\n"
-        "  • Explicit pitch/proposal request: 3–4 sections (e.g. 'Our Experience', 'Technical Approach', 'Why Us')\n"
-        "  Default to fewer sections — only add one when the content genuinely warrants it.\n\n"
-    )
+    if is_pitch:
+        section_rules = (
+            "Structure your response:\n"
+            "  • This is a pitch/proposal request.\n"
+            "  • If the user explicitly listed sections (e.g. 'solution approach, architecture, governance, "
+            "roadmap, outcomes, experience'), generate EVERY one as its own section in the exact order listed. "
+            "Never merge, skip, or rename an explicitly requested section.\n"
+            "  • If no explicit sections were listed, use these in order: Problem Understanding, "
+            "Solution Approach, High-Level Architecture, Data Governance & Compliance, "
+            "Implementation Roadmap, Expected Business Outcomes, Relevant Experience.\n"
+            "  • Each section must be fully developed — minimum 3 substantive paragraphs or equivalent "
+            "structured bullet groups. A one-paragraph section for a pitch is not acceptable.\n\n"
+        )
+    else:
+        section_rules = (
+            "Structure your response:\n"
+            "  • Direct question: 1 section, heading=null, answer it fully\n"
+            "  • Multi-part answer: 2–3 sections with concise descriptive headings\n"
+            "  • General pitch/proposal: 5–6 sections (Solution Approach, Architecture, Roadmap, Outcomes, Experience)\n"
+            "  Default to fewer sections — only add one when the content genuinely warrants it.\n\n"
+        )
 
     if use_web_search:
         source_rules = (
@@ -354,7 +425,17 @@ def run_crew(query: str, use_web_search: bool = False) -> dict:
     """
     llm_fast = _make_llm(temperature=0.3)
     llm_writer = _make_llm(temperature=0.45)
-    kb_tool = SearchKBTool()
+
+    is_pitch = _is_pitch_request(query)
+    # Pitch requests run 5-6 queries, so we trade result count for chunk depth
+    # to stay within Groq free tier's 12k-token-per-request limit.
+    # Budget: 5 queries × 6 results × ~250 tokens (1000 chars) ≈ 7,500 tokens + ~2,500 overhead = 10k.
+    # Non-pitch runs 3-4 queries so can afford more results per query.
+    kb_tool = SearchKBTool(
+        n_results=6 if is_pitch else 10,
+        max_per_file=3,
+        text_limit=1000,
+    )
     web_tool = SearchWebTool() if use_web_search else None
 
     tools = [kb_tool] + ([web_tool] if web_tool else [])
@@ -364,7 +445,7 @@ def run_crew(query: str, use_web_search: bool = False) -> dict:
     writer = _build_writer(llm_writer)
 
     t_plan = _plan_task(query, planner)
-    t_research = _research_task(researcher, context=[t_plan], use_web_search=use_web_search)
+    t_research = _research_task(researcher, context=[t_plan], use_web_search=use_web_search, is_pitch=is_pitch)
     t_write = _write_task(query, writer, context=[t_research], use_web_search=use_web_search)
 
     crew = Crew(
