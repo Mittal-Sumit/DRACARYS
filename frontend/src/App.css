@@ -425,8 +425,6 @@
   flex-wrap: wrap;
   gap: 8px;
   padding: 4px 0 28px;
-  max-width: 720px;
-  margin: 0 auto;
 }
 
 .prompt-chip {
@@ -521,7 +519,7 @@
 
 .proposal-response {
   margin-bottom: 24px;
-  max-width: 760px;
+  width: 100%;
 }
 
 .proposal-byline {
