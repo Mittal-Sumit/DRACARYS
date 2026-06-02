@@ -50,7 +50,10 @@ def generate_proposal(query: str, use_web_search: bool = False, tone: str = "bal
             result = run_crew(query, use_web_search=use_web_search, tone=tone)
         except RuntimeError:
             raise  # Empty ChromaDB — surface as 503
-        except Exception:
+        except Exception as exc:
+            from rag.groq_keys import GroqQuotaExhaustedError
+            if isinstance(exc, GroqQuotaExhaustedError):
+                raise  # surface to views.py — do not silently fall back
             result = None
 
         if result is not None:

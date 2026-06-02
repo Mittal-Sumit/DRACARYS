@@ -40,11 +40,11 @@ from crewai.tools import BaseTool
 from rag.retriever import retrieve
 
 _GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
-_GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 _TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 
-
 _GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+
+from rag.groq_keys import GroqQuotaExhaustedError, is_rotatable_error, key_manager
 
 
 def _make_llm(temperature: float = 0.4) -> LLM:
@@ -55,7 +55,7 @@ def _make_llm(temperature: float = 0.4) -> LLM:
     return LLM(
         model=_GROQ_MODEL,
         base_url=_GROQ_BASE_URL,
-        api_key=_GROQ_API_KEY,
+        api_key=key_manager.current,
         temperature=temperature,
     )
 
@@ -473,14 +473,8 @@ def _write_task(query: str, writer: Agent, context: list[Task], use_web_search: 
 
 # ── Pipeline entry point ──────────────────────────────────────────────────────
 
-def run_crew(query: str, use_web_search: bool = False, tone: str = "balanced") -> dict:
-    """
-    Run the 3-agent pipeline and return {sections, sources, web_sources}.
-
-    Raises:
-        RuntimeError — if ChromaDB is empty (surfaces to the caller as 503)
-    All other agent/LLM errors are caught by the caller and trigger fallback.
-    """
+def _run_crew_once(query: str, use_web_search: bool, tone: str) -> dict:
+    """Build and execute the crew with whichever key is currently active."""
     llm_fast = _make_llm(temperature=0.3)
     llm_writer = _make_llm(temperature=0.45)
 
@@ -516,6 +510,32 @@ def run_crew(query: str, use_web_search: bool = False, tone: str = "balanced") -
 
     result = crew.kickoff()
     return _parse_result(result, kb_tool.found_sources, web_tool)
+
+
+def run_crew(query: str, use_web_search: bool = False, tone: str = "balanced") -> dict:
+    """
+    Run the 3-agent pipeline and return {sections, sources, web_sources}.
+    Rotates through available Groq API keys on rate-limit or quota errors.
+
+    Raises:
+        RuntimeError — if ChromaDB is empty (surfaces to the caller as 503)
+    All other errors after key exhaustion are re-raised to trigger fallback.
+    """
+    key_manager.reset()
+    while True:
+        try:
+            return _run_crew_once(query, use_web_search, tone)
+        except RuntimeError:
+            raise  # ChromaDB empty — do not rotate, surface as 503
+        except Exception as exc:
+            if is_rotatable_error(exc):
+                if key_manager.rotate():
+                    continue  # retry with next key
+                raise GroqQuotaExhaustedError(
+                    f"All {key_manager.pool_size} Groq API key(s) have hit their rate or quota limit. "
+                    "Please try again in a few minutes."
+                ) from exc
+            raise  # non-rotatable error
 
 
 # ── Output parsing ────────────────────────────────────────────────────────────

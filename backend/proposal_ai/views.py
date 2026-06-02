@@ -45,7 +45,10 @@ class GenerateProposalView(APIView):
             result = generate_proposal(query, use_web_search=use_web_search, tone=tone)
         except RuntimeError as e:
             return Response({"error": str(e)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
-        except Exception:
+        except Exception as e:
+            from rag.groq_keys import GroqQuotaExhaustedError
+            if isinstance(e, GroqQuotaExhaustedError):
+                return Response({"error": str(e)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
             return Response(
                 {"error": "Failed to generate a response. Please try again."},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
