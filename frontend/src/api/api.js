@@ -60,27 +60,42 @@ client.interceptors.response.use(
 const isConnectionError = (err) =>
   !err.response || err.response.status === 502 || err.response.status === 503;
 
-export async function generateProposal(query, useWebSearch = false, conversationId = null, tone = "balanced") {
-  const MAX_RETRIES = 2;
-  const RETRY_DELAY_MS = 800;
-
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+const withRetry = async (fn, maxRetries = 2, delay = 1000) => {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      const { data } = await client.post("/generate-proposal/", {
-        query,
-        use_web_search: useWebSearch,
-        conversation_id: conversationId,
-        tone,
-      });
-      return data;
+      return await fn();
     } catch (err) {
-      if (isConnectionError(err) && attempt < MAX_RETRIES) {
-        await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+      if (isConnectionError(err) && attempt < maxRetries) {
+        await new Promise((r) => setTimeout(r, delay));
         continue;
       }
       throw err;
     }
   }
+};
+
+export const loginUser = (email, password) =>
+  axios.post("/api/auth/login/", { email, password }).then((r) => r.data);
+
+export const signupUser = (email, password) =>
+  axios.post("/api/auth/signup/", { email, password }).then((r) => r.data);
+
+export const refreshAccessToken = (refresh) =>
+  axios.post("/api/auth/token/refresh/", { refresh }).then((r) => r.data);
+
+export async function generateProposal(query, useWebSearch = false, conversationId = null, tone = "balanced") {
+  return withRetry(() =>
+    client
+      .post("/generate-proposal/", {
+        query,
+        use_web_search: useWebSearch,
+        conversation_id: conversationId,
+        tone,
+      })
+      .then((r) => r.data),
+    2,
+    800
+  );
 }
 
 export async function getConversations() {
