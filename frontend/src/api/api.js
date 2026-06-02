@@ -83,6 +83,12 @@ export const signupUser = (email, password) =>
 export const refreshAccessToken = (refresh) =>
   axios.post("/api/auth/token/refresh/", { refresh }).then((r) => r.data);
 
+export const forgotPassword = (email) =>
+  axios.post("/api/auth/forgot-password/", { email }).then((r) => r.data);
+
+export const resetPassword = (uid, token, newPassword) =>
+  axios.post("/api/auth/reset-password/", { uid, token, new_password: newPassword }).then((r) => r.data);
+
 export async function generateProposal(query, useWebSearch = false, conversationId = null, tone = "balanced") {
   return withRetry(() =>
     client
