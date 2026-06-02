@@ -43,11 +43,11 @@ def _build_web_sources(web_sources: list[dict]) -> list[dict]:
     ]
 
 
-def generate_proposal(query: str, use_web_search: bool = False) -> dict:
+def generate_proposal(query: str, use_web_search: bool = False, tone: str = "balanced") -> dict:
     if _USE_CREW_AI:
         try:
             from rag.crew import run_crew
-            result = run_crew(query, use_web_search=use_web_search)
+            result = run_crew(query, use_web_search=use_web_search, tone=tone)
         except RuntimeError:
             raise  # Empty ChromaDB — surface as 503
         except Exception:

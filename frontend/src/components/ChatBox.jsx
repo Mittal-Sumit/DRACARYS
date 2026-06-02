@@ -1,7 +1,13 @@
 import { useRef, useCallback } from "react";
 import { Globe, Send } from "lucide-react";
 
-const ChatBox = ({ onSend, disabled, webSearch, onToggleWebSearch }) => {
+const TONE_OPTIONS = [
+  { value: "technical", label: "Technical" },
+  { value: "balanced", label: "Balanced" },
+  { value: "executive", label: "Executive" },
+];
+
+const ChatBox = ({ onSend, disabled, webSearch, onToggleWebSearch, tone, onToneChange }) => {
   const inputRef = useRef(null);
 
   const handleSubmit = useCallback(
@@ -70,6 +76,20 @@ const ChatBox = ({ onSend, disabled, webSearch, onToggleWebSearch }) => {
           <Globe size={12} />
           {webSearch ? "Web on" : "Web search"}
         </button>
+
+        <div className="tone-selector" role="group" aria-label="Response tone">
+          {TONE_OPTIONS.map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              className={`tone-option${tone === opt.value ? " active" : ""}`}
+              onClick={() => onToneChange(opt.value)}
+              title={`Tone: ${opt.label}`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
       </div>
     </form>
   );

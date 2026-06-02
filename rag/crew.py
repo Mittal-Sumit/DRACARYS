@@ -333,18 +333,51 @@ def _research_task(
     )
 
 
-def _write_task(query: str, writer: Agent, context: list[Task], use_web_search: bool = False) -> Task:
+_TONE_INSTRUCTIONS = {
+    "technical": (
+        "AUDIENCE & TONE — Technical:\n"
+        "Write for solutions architects, data engineers, and CTOs. "
+        "Use precise technical terminology: name specific services (e.g. Azure Data Factory, ADLS Gen2, Databricks, Purview), "
+        "data patterns (medallion architecture, CDC, ELT/ETL, streaming), and implementation details. "
+        "Include architecture rationale, data flow specifics, and technology trade-offs. "
+        "Lead with the how — pipeline design, integration approach, technology choices. "
+        "Business outcomes should anchor each section, but technical depth is the priority.\n\n"
+    ),
+    "executive": (
+        "AUDIENCE & TONE — Executive:\n"
+        "Write for CEOs, CFOs, and CDOs who make investment decisions. "
+        "Every sentence must answer 'so what?' from a business perspective. "
+        "Translate all technical elements into plain business language — "
+        "'automated data pipelines' not 'Azure Data Factory', "
+        "'a structured data quality framework' not 'medallion architecture'. "
+        "Quantify everything in business terms: time saved, cost reduced, risk eliminated, decisions accelerated. "
+        "Avoid all acronyms — if one is unavoidable, define it immediately in plain language. "
+        "Never describe what a technology is — only say what it delivers for the business. "
+        "Write like a trusted advisor, not a vendor pitching features.\n\n"
+    ),
+    "balanced": "",
+}
+
+
+def _write_task(query: str, writer: Agent, context: list[Task], use_web_search: bool = False, tone: str = "balanced") -> Task:
     is_pitch = _is_pitch_request(query)
+    tone_instruction = _TONE_INSTRUCTIONS.get(tone, "")
 
     base_rules = (
-        "  1. Never invent clients, projects, metrics, or technologies not in the brief.\n"
-        "  2. No filler: avoid 'leveraging', 'strategic', 'well-positioned', 'robust', 'seamlessly', 'end-to-end'.\n"
-        "  3. Be specific — cite exact client names, platforms, measurable outcomes, and metrics from the brief. "
+        "  1. NUMBER CITATION RULE (non-negotiable): Before writing any number, percentage, timeframe, or metric, "
+        "ask yourself: 'Does this exact figure appear in the research brief?' "
+        "If YES — use it and attribute it to the source. "
+        "If NO — do not state it as fact. Replace with hedged language: "
+        "'potential benefits may include...', 'clients in similar engagements have seen...', "
+        "or 'expected to reduce...' Never present an inferred, estimated, or rounded figure as a confirmed outcome.\n"
+        "  2. Never invent clients, projects, or technologies not in the brief.\n"
+        "  3. No filler: avoid 'leveraging', 'strategic', 'well-positioned', 'robust', 'seamlessly', 'end-to-end'.\n"
+        "  4. Be specific — cite exact client names, platforms, and metrics from the brief. "
         "Generic statements like 'we have pharma experience' without a named client are not acceptable.\n"
-        "  4. For pitches: connect each case study outcome directly to the prospect's stated challenge. "
+        "  5. For pitches: connect each case study outcome directly to the prospect's stated challenge. "
         "Don't just describe what you did — explain why it applies to this specific client.\n"
-        "  5. Depth matters — develop each point fully. Don't truncate or summarise where the brief has detail.\n"
-        "  6. Use markdown in `content` to aid readability: **bold** for client names, technology names, and key metrics; "
+        "  6. Depth matters — develop each point fully. Don't truncate or summarise where the brief has detail.\n"
+        "  7. Use markdown in `content` to aid readability: **bold** for client names, technology names, and key metrics; "
         "bullet lists (- item) for enumerable items; numbered lists (1. item) for steps or sequences; "
         "blank line between paragraphs; > blockquote for a key highlight or standout fact. "
         "Do NOT use backtick code formatting (`...`) for product names, technology names, or project names — "
@@ -352,7 +385,31 @@ def _write_task(query: str, writer: Agent, context: list[Task], use_web_search: 
         "Format purposefully — only where it genuinely helps the reader.\n"
     )
 
-    if is_pitch:
+    if is_pitch and tone == "executive":
+        section_rules = (
+            "Structure your response with EXACTLY these 7 sections in this exact order. "
+            "Use these headings verbatim:\n"
+            "  1. Business Challenges — Frame the client's pain points as business problems. "
+            "Show you understand their world: operational risk, compliance exposure, missed decisions. "
+            "No technical terminology.\n"
+            "  2. Business Impact — Quantify the cost of inaction. What is the business paying today "
+            "for siloed systems, manual processes, and poor visibility? Make the status quo feel expensive.\n"
+            "  3. Expected Outcomes — Concrete, measurable business results the client can expect: "
+            "time saved, cost reduced, compliance risk eliminated, decisions accelerated. "
+            "Outcomes only — never restate a challenge as an outcome.\n"
+            "  4. Relevant Experience — 2–3 named client proof points from the KB brief. "
+            "For each: state the business problem, what we delivered, and the measurable result. "
+            "Connect each explicitly to one of the client's stated challenges.\n"
+            "  5. Why Ganit — Our differentiators and why we are the right partner for this engagement. "
+            "Draw from the Ganit Corporate Profile in the brief. Specific claims only — no generic consulting language.\n"
+            "  6. Key Discussion Points — 4–5 strategic conversation starters for the meeting "
+            "that demonstrate understanding of their business and open meaningful dialogue.\n"
+            "  7. Discovery Questions — 4–6 open-ended questions to ask the client to uncover "
+            "deeper priorities, constraints, and decision criteria.\n\n"
+            "Each section must have its heading exactly as listed above. "
+            "Develop each section fully — no one-paragraph sections.\n\n"
+        )
+    elif is_pitch:
         section_rules = (
             "Structure your response:\n"
             "  • This is a pitch/proposal request.\n"
@@ -382,14 +439,15 @@ def _write_task(query: str, writer: Agent, context: list[Task], use_web_search: 
             "  Never use 'we' for web-sourced facts. Never blend KB and web claims in the same sentence.\n"
             "  If KB and web data conflict, use KB and ignore web.\n"
         )
-        sources_instruction = "  6. 'sources': list only internal KB document names cited.\n"
+        sources_instruction = "  8. 'sources': list only internal KB document names cited.\n"
     else:
         source_rules = ""
-        sources_instruction = "  6. 'sources': list only source document names actually cited.\n"
+        sources_instruction = "  8. 'sources': list only source document names actually cited.\n"
 
     description = (
         f'User question: "{query}"\n\n'
-        "Using ONLY the research brief above, answer the user's question.\n\n"
+        + tone_instruction
+        + "Using ONLY the research brief above, answer the user's question.\n\n"
         + section_rules
         + "Rules:\n"
         + base_rules
@@ -415,7 +473,7 @@ def _write_task(query: str, writer: Agent, context: list[Task], use_web_search: 
 
 # ── Pipeline entry point ──────────────────────────────────────────────────────
 
-def run_crew(query: str, use_web_search: bool = False) -> dict:
+def run_crew(query: str, use_web_search: bool = False, tone: str = "balanced") -> dict:
     """
     Run the 3-agent pipeline and return {sections, sources, web_sources}.
 
@@ -446,7 +504,7 @@ def run_crew(query: str, use_web_search: bool = False) -> dict:
 
     t_plan = _plan_task(query, planner)
     t_research = _research_task(researcher, context=[t_plan], use_web_search=use_web_search, is_pitch=is_pitch)
-    t_write = _write_task(query, writer, context=[t_research], use_web_search=use_web_search)
+    t_write = _write_task(query, writer, context=[t_research], use_web_search=use_web_search, tone=tone)
 
     crew = Crew(
         agents=[planner, researcher, writer],

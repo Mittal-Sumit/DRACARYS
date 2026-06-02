@@ -39,9 +39,10 @@ class GenerateProposalView(APIView):
         query = serializer.validated_data["query"]
         use_web_search = serializer.validated_data.get("use_web_search", False)
         conversation_id = serializer.validated_data.get("conversation_id", None)
+        tone = serializer.validated_data.get("tone", "balanced")
 
         try:
-            result = generate_proposal(query, use_web_search=use_web_search)
+            result = generate_proposal(query, use_web_search=use_web_search, tone=tone)
         except RuntimeError as e:
             return Response({"error": str(e)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
         except Exception:

@@ -7,6 +7,11 @@ class ProposalRequestSerializer(serializers.Serializer):
     query = serializers.CharField(min_length=2, max_length=1000)
     use_web_search = serializers.BooleanField(default=False, required=False)
     conversation_id = serializers.IntegerField(required=False, allow_null=True, default=None)
+    tone = serializers.ChoiceField(
+        choices=["technical", "balanced", "executive"],
+        default="balanced",
+        required=False,
+    )
 
 
 class SectionSerializer(serializers.Serializer):

@@ -60,7 +60,7 @@ client.interceptors.response.use(
 const isConnectionError = (err) =>
   !err.response || err.response.status === 502 || err.response.status === 503;
 
-export async function generateProposal(query, useWebSearch = false, conversationId = null) {
+export async function generateProposal(query, useWebSearch = false, conversationId = null, tone = "balanced") {
   const MAX_RETRIES = 2;
   const RETRY_DELAY_MS = 800;
 
@@ -70,6 +70,7 @@ export async function generateProposal(query, useWebSearch = false, conversation
         query,
         use_web_search: useWebSearch,
         conversation_id: conversationId,
+        tone,
       });
       return data;
     } catch (err) {

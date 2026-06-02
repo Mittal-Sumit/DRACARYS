@@ -53,6 +53,7 @@ const Home = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [webSearch, setWebSearch] = useState(false);
+  const [tone, setTone] = useState("balanced");
   const [conversations, setConversations] = useState([]);
   const [activeConversationId, setActiveConversationId] = useState(null);
 
@@ -134,7 +135,7 @@ const Home = () => {
     setError(null);
 
     try {
-      const result = await generateProposal(query, webSearch, activeConversationId);
+      const result = await generateProposal(query, webSearch, activeConversationId, tone);
 
       const assistantMsg = {
         id: Date.now() + 1,
@@ -161,7 +162,7 @@ const Home = () => {
     } finally {
       setLoading(false);
     }
-  }, [webSearch, activeConversationId, user]);
+  }, [webSearch, tone, activeConversationId, user]);
 
   return (
     <div className="layout">
@@ -280,6 +281,8 @@ const Home = () => {
             disabled={loading}
             webSearch={webSearch}
             onToggleWebSearch={setWebSearch}
+            tone={tone}
+            onToneChange={setTone}
           />
         </div>
       </main>
