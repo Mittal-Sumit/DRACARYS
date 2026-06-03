@@ -10,6 +10,9 @@ __pycache__/
 # Environment variables
 .env
 
+# MSAL token cache — contains auth tokens, never commit
+.msal_cache.json
+
 # Django
 db.sqlite3
 *.log
@@ -39,6 +42,15 @@ build/
 # Processed files
 processed_data/*.pkl
 
+# ChromaDB — regenerate with: python -m ingestion.ingest
+chroma_db/
+
+# Egg info
+*.egg-info/
+
+# Sentence transformer / HuggingFace model cache
+.cache/
+
 # Jupyter
 .ipynb_checkpoints/
 
@@ -55,6 +67,10 @@ tmp/
 
 # IDE
 .idea/
+
+# Claude Code
+.claude/settings.local.json
+CLAUDE.md
 
 # Logs
 logs/
