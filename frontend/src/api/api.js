@@ -2,8 +2,12 @@ import axios from "axios";
 
 export const SESSION_KEY = "dracarys_session";
 
+// In dev: VITE_API_BASE_URL is unset → "" → Vite proxy handles /api → localhost:8000
+// In prod: VITE_API_BASE_URL=https://<hf-space>.hf.space → full cross-origin URL
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
+
 export const client = axios.create({
-  baseURL: "/api",
+  baseURL: `${API_BASE}/api`,
   timeout: 60000,
 });
 
@@ -40,7 +44,7 @@ client.interceptors.response.use(
     try {
       if (!_refreshPromise) {
         _refreshPromise = axios
-          .post("/api/auth/token/refresh/", { refresh: session.refresh })
+          .post(`${API_BASE}/api/auth/token/refresh/`, { refresh: session.refresh })
           .finally(() => { _refreshPromise = null; });
       }
       const { data } = await _refreshPromise;
@@ -75,19 +79,19 @@ const withRetry = async (fn, maxRetries = 2, delay = 1000) => {
 };
 
 export const loginUser = (email, password) =>
-  axios.post("/api/auth/login/", { email, password }).then((r) => r.data);
+  axios.post(`${API_BASE}/api/auth/login/`, { email, password }).then((r) => r.data);
 
 export const signupUser = (email, password) =>
-  axios.post("/api/auth/signup/", { email, password }).then((r) => r.data);
+  axios.post(`${API_BASE}/api/auth/signup/`, { email, password }).then((r) => r.data);
 
 export const refreshAccessToken = (refresh) =>
-  axios.post("/api/auth/token/refresh/", { refresh }).then((r) => r.data);
+  axios.post(`${API_BASE}/api/auth/token/refresh/`, { refresh }).then((r) => r.data);
 
 export const forgotPassword = (email) =>
-  axios.post("/api/auth/forgot-password/", { email }).then((r) => r.data);
+  axios.post(`${API_BASE}/api/auth/forgot-password/`, { email }).then((r) => r.data);
 
 export const resetPassword = (uid, token, newPassword) =>
-  axios.post("/api/auth/reset-password/", { uid, token, new_password: newPassword }).then((r) => r.data);
+  axios.post(`${API_BASE}/api/auth/reset-password/`, { uid, token, new_password: newPassword }).then((r) => r.data);
 
 export async function generateProposal(query, useWebSearch = false, conversationId = null, tone = "balanced") {
   return withRetry(() =>

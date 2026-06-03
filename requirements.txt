@@ -11,6 +11,9 @@ django-cors-headers==4.9.0
 asgiref==3.11.1
 gunicorn==26.0.0
 sqlparse==0.5.5
+psycopg2-binary>=2.9.0
+dj-database-url>=2.0.0
+whitenoise>=6.7.0
 
 # PDF extraction (primary: PyMuPDF, OCR fallback: pytesseract)
 pymupdf>=1.24.0
