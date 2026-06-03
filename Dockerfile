@@ -25,7 +25,7 @@ CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')"
 COPY chroma_db/ chroma_db/
 
 # Runtime code
-COPY docs/ docs/
+#COPY docs/ docs/
 COPY ingestion/ ingestion/
 COPY rag/ rag/
 COPY backend/ backend/
