@@ -19,6 +19,7 @@ Why this beats single-shot RAG:
 import json
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import litellm
@@ -471,45 +472,245 @@ def _write_task(query: str, writer: Agent, context: list[Task], use_web_search: 
     )
 
 
+def _parse_queries(plan_result) -> list[str]:
+    """Extract the query list from the planner's crew output."""
+    raw = getattr(plan_result, "raw", None) or str(plan_result)
+    raw = raw.strip()
+
+    def _try(text: str) -> list[str] | None:
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict) and "queries" in parsed:
+                qs = [q for q in parsed["queries"] if isinstance(q, str) and q.strip()]
+                return qs or None
+        except (json.JSONDecodeError, ValueError):
+            return None
+
+    result = _try(raw)
+    if result:
+        return result
+
+    # Try extracting JSON object from inside surrounding text
+    start, end = raw.rfind("{"), raw.rfind("}") + 1
+    if start != -1 and end > start:
+        result = _try(raw[start:end])
+        if result:
+            return result
+
+    # Fallback: treat the whole output as one query
+    return [raw[:500]] if raw else []
+
+
+# ── S3: Parallel KB fetch ─────────────────────────────────────────────────────
+
+def _parallel_kb_fetch(
+    queries: list[str],
+    n_results: int,
+    max_per_file: int,
+    text_limit: int,
+) -> tuple[str, list[dict]]:
+    """Run all KB searches simultaneously and return (kb_brief_text, found_sources).
+
+    Replaces the sequential tool-call loop inside the researcher agent.
+    All queries are independent so they can all start at the same time.
+    """
+    found_sources: list[dict] = []
+    seen_names: set[str] = set()
+    results_by_query: dict[str, list[dict]] = {}
+
+    def _fetch_one(q: str) -> tuple[str, list[dict]]:
+        try:
+            return q, retrieve(q, n_results=n_results, max_per_file=max_per_file)
+        except RuntimeError:
+            raise  # ChromaDB empty — must propagate
+        except Exception:
+            return q, []
+
+    max_workers = min(len(queries), 6)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_fetch_one, q): q for q in queries}
+        for future in as_completed(futures):
+            q, chunks = future.result()  # RuntimeError propagates here if DB empty
+            results_by_query[q] = chunks
+            for chunk in chunks:
+                display = chunk.get("display_name") or chunk["file"]
+                if display not in seen_names:
+                    found_sources.append({"name": display, "file": chunk["file"]})
+                    seen_names.add(display)
+
+    # Format into a structured text block for the researcher
+    lines = ["=== PRE-FETCHED KNOWLEDGE BASE RESULTS ===\n"]
+    for q in queries:  # preserve planner's original query order
+        chunks = results_by_query.get(q, [])
+        lines.append(f"--- Query: {q} ---")
+        if not chunks:
+            lines.append("No relevant results found.\n")
+            continue
+        for chunk in chunks:
+            display = chunk.get("display_name") or chunk["file"]
+            score = chunk.get("score", 0.0)
+            lines.append(f"[Source: {display} | relevance: {score:.3f}]")
+            lines.append(chunk["text"][:text_limit].strip())
+            lines.append("")
+
+    return "\n".join(lines), found_sources
+
+
+# ── Researcher variant: pre-fetched KB ────────────────────────────────────────
+
+def _build_researcher_with_context(llm: LLM, tools: list) -> Agent:
+    """Researcher agent when KB results are pre-fetched and injected as text.
+    Has no KB tool — only SearchWebTool if web search is enabled.
+    """
+    has_web = any(isinstance(t, SearchWebTool) for t in tools)
+    goal = (
+        "Analyse the provided knowledge base results and any web search findings. "
+        "Synthesise into two strictly separated briefs: one for internal KB facts, "
+        "one for web/market context. Never mix content between sections."
+        if has_web else
+        "Analyse the provided knowledge base results and synthesise them into "
+        "an exhaustive, fact-rich research brief."
+    )
+    return Agent(
+        role="Research Analyst",
+        goal=goal,
+        backstory=(
+            "You are a meticulous research analyst. You are given pre-retrieved knowledge base results "
+            "and extract specific facts: client names, cloud platforms, technologies, delivery timelines, "
+            "and measurable outcomes. You never invent facts — you only report what the sources say."
+        ),
+        tools=tools,
+        llm=llm,
+        allow_delegation=False,
+        verbose=False,
+    )
+
+
+def _research_task_with_kb_context(
+    researcher: Agent,
+    query: str,
+    kb_context: str,
+    use_web_search: bool = False,
+    is_pitch: bool = False,
+) -> Task:
+    """Research task with KB results already injected — no KB tool calls needed."""
+    pitch_kb_extra = (
+        "\n\nThis is a pitch/proposal request — extract with maximum depth. "
+        "For EACH case study found:\n"
+        "  • Client name, industry, country/geography, and scale\n"
+        "  • Exact technologies and cloud services used (name every one)\n"
+        "  • Specific measurable outcomes — copy percentages, volumes, and timelines verbatim\n"
+        "  • Which of the user's requested pitch sections this case study most directly supports\n"
+        "Do not paraphrase — extract actual facts. "
+        "Flag any requested section for which the KB had no relevant content."
+    ) if is_pitch else ""
+
+    if use_web_search:
+        description = (
+            f'User query: "{query}"\n\n'
+            "The knowledge base has already been searched. Results are below:\n\n"
+            + kb_context
+            + "\n\nNow use search_web to gather external market context for this query.\n\n"
+            "Output your brief in exactly these two labelled sections — no exceptions:\n\n"
+            "=== INTERNAL KB BRIEF ===\n"
+            "Synthesise the PRE-FETCHED KNOWLEDGE BASE RESULTS above. Cover:\n"
+            "  • Each relevant project — client name, industry, what was built, outcomes, metrics\n"
+            "  • Technologies, cloud platforms, timelines, scale\n"
+            "  • Source document names\n"
+            "If no KB results found, write: No relevant internal projects found.\n"
+            + pitch_kb_extra + "\n\n"
+            "=== WEB RESEARCH BRIEF ===\n"
+            "Context from search_web ONLY. Cover:\n"
+            "  • Market size, industry trends, benchmarks\n"
+            "  • Client company background if relevant\n"
+            "  • Technology adoption data or analyst reports\n"
+            "Always note the source title and URL for each fact.\n"
+            "If no web results found, write: No relevant web context found.\n\n"
+            "CRITICAL: Never move a fact from one section to the other. "
+            "Never blend internal and web content."
+        )
+        expected_output = (
+            "Two labelled sections: '=== INTERNAL KB BRIEF ===' with internal project facts, "
+            "and '=== WEB RESEARCH BRIEF ===' with external market context."
+        )
+    else:
+        description = (
+            f'User query: "{query}"\n\n'
+            "The knowledge base has already been searched. Results are below:\n\n"
+            + kb_context
+            + "\n\nSynthesise these results into a research brief covering:\n"
+            "  • Each relevant project — client name, industry, what was built, "
+            "specific outcomes and metrics\n"
+            "  • Technologies and cloud platforms mentioned across all sources\n"
+            "  • Any specific timelines, scale, or volume details\n"
+            "  • Which source documents contained the most relevant information\n\n"
+            "Be exhaustive. Every specific fact in the sources should appear in your brief."
+            + pitch_kb_extra
+        )
+        expected_output = (
+            "A structured research brief covering all relevant projects, technologies, "
+            "outcomes, and source document names."
+        )
+
+    return Task(
+        description=description,
+        expected_output=expected_output,
+        agent=researcher,
+        context=[],  # KB injected directly into description — no parent task needed
+    )
+
+
 # ── Pipeline entry point ──────────────────────────────────────────────────────
 
 def _run_crew_once(query: str, use_web_search: bool, tone: str) -> dict:
-    """Build and execute the crew with whichever key is currently active."""
+    """Build and execute the pipeline with whichever key is currently active.
+
+    S3: KB searches run in parallel after planning, before the researcher runs (~4s saved).
+    """
+    is_pitch = _is_pitch_request(query)
     llm_fast = _make_llm(temperature=0.3)
     llm_writer = _make_llm(temperature=0.45)
 
-    is_pitch = _is_pitch_request(query)
-    # Pitch requests run 5-6 queries, so we trade result count for chunk depth
-    # to stay within Groq free tier's 12k-token-per-request limit.
-    # Budget: 5 queries × 6 results × ~250 tokens (1000 chars) ≈ 7,500 tokens + ~2,500 overhead = 10k.
-    # Non-pitch runs 3-4 queries so can afford more results per query.
-    kb_tool = SearchKBTool(
-        n_results=6 if is_pitch else 10,
-        max_per_file=3,
-        text_limit=1000,
-    )
-    web_tool = SearchWebTool() if use_web_search else None
-
-    tools = [kb_tool] + ([web_tool] if web_tool else [])
-
+    # ── Query planning (always runs) ───────────────────────────────────────
     planner = _build_planner(llm_fast)
-    researcher = _build_researcher(llm_fast, tools)
+    t_plan = _plan_task(query, planner)
+    plan_result = Crew(
+        agents=[planner], tasks=[t_plan],
+        process=Process.sequential, verbose=False, memory=False,
+    ).kickoff()
+    queries = _parse_queries(plan_result)
+
+    # ── S3: Parallel KB fetch ──────────────────────────────────────────────
+    # All queries are independent — run them simultaneously instead of sequentially.
+    # Token budget: pitch 5q × 6r × ~250tok ≈ 7.5k; non-pitch 3q × 10r × ~250tok ≈ 7.5k.
+    n_results = 6 if is_pitch else 10
+    kb_context, found_sources = _parallel_kb_fetch(
+        queries, n_results=n_results, max_per_file=3, text_limit=1000,
+    )
+
+    # ── Research + Write ───────────────────────────────────────────────────
+    # KB already fetched — researcher only needs SearchWebTool (if enabled).
+    web_tool = SearchWebTool() if use_web_search else None
+    tools = [web_tool] if web_tool else []
+
+    researcher = _build_researcher_with_context(llm_fast, tools)
     writer = _build_writer(llm_writer)
 
-    t_plan = _plan_task(query, planner)
-    t_research = _research_task(researcher, context=[t_plan], use_web_search=use_web_search, is_pitch=is_pitch)
+    t_research = _research_task_with_kb_context(
+        researcher, query, kb_context,
+        use_web_search=use_web_search, is_pitch=is_pitch,
+    )
     t_write = _write_task(query, writer, context=[t_research], use_web_search=use_web_search, tone=tone)
 
-    crew = Crew(
-        agents=[planner, researcher, writer],
-        tasks=[t_plan, t_research, t_write],
+    result = Crew(
+        agents=[researcher, writer],
+        tasks=[t_research, t_write],
         process=Process.sequential,
         verbose=False,
         memory=False,
-    )
+    ).kickoff()
 
-    result = crew.kickoff()
-    return _parse_result(result, kb_tool.found_sources, web_tool)
+    return _parse_result(result, found_sources, web_tool)
 
 
 def run_crew(query: str, use_web_search: bool = False, tone: str = "balanced") -> dict:
