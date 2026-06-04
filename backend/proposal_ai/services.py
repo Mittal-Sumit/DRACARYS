@@ -12,7 +12,7 @@ _USE_CREW_AI = os.getenv("USE_CREW_AI", "true").lower() == "true"
 
 
 def _build_sources(names: list[str]) -> list[dict]:
-    """Convert source display names to {name, url} objects for frontend linking."""
+    """Convert KB source display names to {name, url} objects for frontend linking."""
     from ingestion.doc_metadata import get_filename_by_display_name
     result = []
     for name in names:
@@ -24,11 +24,20 @@ def _build_sources(names: list[str]) -> list[dict]:
     return result
 
 
-def generate_proposal(query: str) -> dict:
+def _build_web_sources(web_sources: list[dict]) -> list[dict]:
+    """Normalise web sources — already have name+url from Tavily, just filter empties."""
+    return [
+        {"name": s["name"], "url": s.get("url", "")}
+        for s in web_sources
+        if s.get("name")
+    ]
+
+
+def generate_proposal(query: str, use_web_search: bool = False) -> dict:
     if _USE_CREW_AI:
         try:
             from rag.crew import run_crew
-            result = run_crew(query)
+            result = run_crew(query, use_web_search=use_web_search)
         except RuntimeError:
             raise  # Empty ChromaDB — surface as 503
         except Exception:
@@ -36,6 +45,7 @@ def generate_proposal(query: str) -> dict:
 
         if result is not None:
             result["sources"] = _build_sources(result.get("sources") or [])
+            result["web_sources"] = _build_web_sources(result.get("web_sources") or [])
             return result
 
     return _generate_simple(query)
@@ -79,4 +89,4 @@ def _generate_simple(query: str) -> dict:
             if name not in seen:
                 sources.append(name)
                 seen.add(name)
-    return {"sections": sections, "sources": _build_sources(sources)}
+    return {"sections": sections, "sources": _build_sources(sources), "web_sources": []}

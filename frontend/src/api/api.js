@@ -1,20 +1,76 @@
 import axios from "axios";
 
-const client = axios.create({
+export const SESSION_KEY = "dracarys_session";
+
+export const client = axios.create({
   baseURL: "/api",
   timeout: 60000,
 });
 
+// Module-level token store — written by AuthContext, read by interceptor
+let _accessToken = null;
+let _onUnauthenticated = null;
+let _refreshPromise = null; // deduplicates concurrent refresh calls
+
+export const setAccessToken = (token) => { _accessToken = token; };
+export const setUnauthenticatedHandler = (fn) => { _onUnauthenticated = fn; };
+
+client.interceptors.request.use((config) => {
+  if (_accessToken) config.headers.Authorization = `Bearer ${_accessToken}`;
+  return config;
+});
+
+client.interceptors.response.use(
+  (res) => res,
+  async (error) => {
+    if (error.response?.status !== 401 || error.config._retry) {
+      return Promise.reject(error);
+    }
+    error.config._retry = true;
+
+    const session = (() => {
+      try { return JSON.parse(localStorage.getItem(SESSION_KEY)); } catch { return null; }
+    })();
+
+    if (!session?.refresh) {
+      _onUnauthenticated?.();
+      return Promise.reject(error);
+    }
+
+    try {
+      if (!_refreshPromise) {
+        _refreshPromise = axios
+          .post("/api/auth/token/refresh/", { refresh: session.refresh })
+          .finally(() => { _refreshPromise = null; });
+      }
+      const { data } = await _refreshPromise;
+      _accessToken = data.access;
+      if (data.refresh) {
+        localStorage.setItem(SESSION_KEY, JSON.stringify({ ...session, refresh: data.refresh }));
+      }
+      error.config.headers.Authorization = `Bearer ${data.access}`;
+      return client(error.config);
+    } catch {
+      _onUnauthenticated?.();
+      return Promise.reject(error);
+    }
+  }
+);
+
 const isConnectionError = (err) =>
   !err.response || err.response.status === 502 || err.response.status === 503;
 
-export async function generateProposal(query) {
+export async function generateProposal(query, useWebSearch = false, conversationId = null) {
   const MAX_RETRIES = 2;
   const RETRY_DELAY_MS = 800;
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
-      const { data } = await client.post("/generate-proposal/", { query });
+      const { data } = await client.post("/generate-proposal/", {
+        query,
+        use_web_search: useWebSearch,
+        conversation_id: conversationId,
+      });
       return data;
     } catch (err) {
       if (isConnectionError(err) && attempt < MAX_RETRIES) {
@@ -24,4 +80,18 @@ export async function generateProposal(query) {
       throw err;
     }
   }
+}
+
+export async function getConversations() {
+  const { data } = await client.get("/conversations/");
+  return data;
+}
+
+export async function getConversation(id) {
+  const { data } = await client.get(`/conversations/${id}/`);
+  return data;
+}
+
+export async function deleteConversation(id) {
+  await client.delete(`/conversations/${id}/`);
 }
