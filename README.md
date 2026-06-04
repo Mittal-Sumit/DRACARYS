@@ -1,3 +1,12 @@
+---
+title: Dracarys
+emoji: 🔥
+colorFrom: blue
+colorTo: red
+sdk: docker
+pinned: false
+---
+
 # Dracarys — AI Pre-Sales Proposal Assistant
 
 Dracarys is an AI assistant built for pre-sales teams. It ingests past proposal documents, stores them as searchable embeddings, and uses an LLM to generate context-aware responses grounded in your company's real project history — so your team stops digging through folders and starts pitching faster.
