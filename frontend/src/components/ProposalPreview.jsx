@@ -108,13 +108,19 @@ const ProposalPreview = ({ data }) => (
               {data.sources.map((src) => {
                 const name = typeof src === "string" ? src : src.name;
                 const url = typeof src === "string" ? null : src.url;
+                const similarityScore = typeof src === "string" ? null : src.similarity_score;
+                const scoreDisplay = similarityScore ? ` (${similarityScore.toFixed(0)}%)` : "";
                 return url ? (
-                  <a key={name} href={url} target="_blank" rel="noopener noreferrer" className="pill pill-kb">
+                  <a key={name} href={url} target="_blank" rel="noopener noreferrer" className="pill pill-kb" title={`Similarity score: ${similarityScore?.toFixed(1)}%`}>
                     {name}
+                    {scoreDisplay}
                     <ExternalLink size={10} />
                   </a>
                 ) : (
-                  <span key={name} className="pill pill-kb">{name}</span>
+                  <span key={name} className="pill pill-kb" title={`Similarity score: ${similarityScore?.toFixed(1)}%`}>
+                    {name}
+                    {scoreDisplay}
+                  </span>
                 );
               })}
             </div>

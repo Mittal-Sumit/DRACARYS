@@ -513,8 +513,10 @@ def _parallel_kb_fetch(
 
     Replaces the sequential tool-call loop inside the researcher agent.
     All queries are independent so they can all start at the same time.
+
+    Returns found_sources filtered to top 3 by average similarity score.
     """
-    found_sources: list[dict] = []
+    source_scores: dict[str, list[float]] = {}  # {display_name: [scores]}
     seen_names: set[str] = set()
     results_by_query: dict[str, list[dict]] = {}
 
@@ -534,9 +536,41 @@ def _parallel_kb_fetch(
             results_by_query[q] = chunks
             for chunk in chunks:
                 display = chunk.get("display_name") or chunk["file"]
-                if display not in seen_names:
-                    found_sources.append({"name": display, "file": chunk["file"]})
-                    seen_names.add(display)
+                score = chunk.get("score", 0.0)
+                if display not in source_scores:
+                    source_scores[display] = []
+                source_scores[display].append(score)
+                seen_names.add(display)
+
+    # Calculate average similarity score per source and sort by relevance
+    def _normalize_score(raw_score: float) -> float:
+        """Normalize cross-encoder score (-10 to 10) to 0-100 scale."""
+        return max(0, min(100, ((raw_score + 10) / 20) * 100))
+
+    source_with_scores = [
+        {
+            "name": display,
+            "file": None,  # Will be filled from chunks
+            "similarity_score": _normalize_score(sum(scores) / len(scores))
+        }
+        for display, scores in source_scores.items()
+    ]
+
+    # Sort by similarity score (descending) and keep top 3
+    source_with_scores.sort(key=lambda x: x["similarity_score"], reverse=True)
+    top_sources = source_with_scores[:3]
+
+    # Fill in file paths for top sources by looking back at chunks
+    top_source_names = {s["name"] for s in top_sources}
+    for chunk_list in results_by_query.values():
+        for chunk in chunk_list:
+            display = chunk.get("display_name") or chunk["file"]
+            if display in top_source_names:
+                for src in top_sources:
+                    if src["name"] == display and src["file"] is None:
+                        src["file"] = chunk["file"]
+
+    found_sources = top_sources
 
     # Format into a structured text block for the researcher
     lines = ["=== PRE-FETCHED KNOWLEDGE BASE RESULTS ===\n"]
@@ -741,10 +775,11 @@ def run_crew(query: str, use_web_search: bool = False, tone: str = "balanced") -
 
 # ── Output parsing ────────────────────────────────────────────────────────────
 
-def _parse_result(result, found_sources: list[str], web_tool=None) -> dict:
+def _parse_result(result, found_sources: list[dict], web_tool=None) -> dict:
     """
     Extract {sections, sources, web_sources} from the crew result.
     Uses multiple fallback strategies so a malformed LLM response never crashes.
+    Preserves similarity_score from found_sources in the output.
     """
     raw = result.raw if hasattr(result, "raw") and result.raw else str(result)
     web_sources = web_tool.found_web_sources if web_tool else []
@@ -755,12 +790,15 @@ def _parse_result(result, found_sources: list[str], web_tool=None) -> dict:
 
         # Prefer sources reported by the writer; fall back to KB tool tracking.
         # Always show sources — even heading=null answers come from the KB.
-        # Map writer source names → {name, file} using KB tool tracking so URLs work
-        # for any document, regardless of whether it's registered in doc_metadata.py.
+        # Map writer source names → {name, file, similarity_score} using KB tool tracking
+        # so URLs work for any document and similarity scores are preserved.
         writer_source_names = parsed.get("sources") or []
         if writer_source_names:
             found_map = {s["name"]: s for s in found_sources}
-            sources = [found_map.get(n, {"name": n, "file": None}) for n in writer_source_names]
+            sources = [
+                found_map.get(n, {"name": n, "file": None})
+                for n in writer_source_names
+            ]
         else:
             sources = found_sources
 

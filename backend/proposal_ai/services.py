@@ -19,9 +19,10 @@ _DOCS_BASE = (os.getenv("SUPABASE_DOCS_BASE_URL") or "").rstrip("/")
 def _build_sources(sources: list) -> list[dict]:
     """Convert KB sources to {name, url} objects for frontend linking.
 
-    Accepts either strings (display names) or dicts with {name, file}.
+    Accepts either strings (display names) or dicts with {name, file, similarity_score}.
     Uses the file field directly when available so any ingested document
     gets a working link — even if it's not registered in doc_metadata.py.
+    Preserves similarity_score field if present.
     """
     from ingestion.doc_metadata import get_filename_by_display_name
     result = []
@@ -29,14 +30,19 @@ def _build_sources(sources: list) -> list[dict]:
         if isinstance(src, dict):
             name = src["name"]
             filename = src.get("file") or get_filename_by_display_name(name)
+            similarity_score = src.get("similarity_score")
         else:
             name = src
             filename = get_filename_by_display_name(name)
+            similarity_score = None
         if filename:
             url = f"{_DOCS_BASE}/{filename}" if _DOCS_BASE else f"/api/docs/{filename}"
         else:
             url = None
-        result.append({"name": name, "url": url})
+        source_obj = {"name": name, "url": url}
+        if similarity_score is not None:
+            source_obj["similarity_score"] = similarity_score
+        result.append(source_obj)
     return result
 
 
