@@ -1,7 +1,13 @@
 import { useRef, useCallback } from "react";
-import { Plus, Send } from "lucide-react";
+import { Globe, Send } from "lucide-react";
 
-const ChatBox = ({ onSend, disabled }) => {
+const TONE_OPTIONS = [
+  { value: "technical", label: "Technical" },
+  { value: "balanced", label: "Balanced" },
+  { value: "executive", label: "Executive" },
+];
+
+const ChatBox = ({ onSend, disabled, webSearch, onToggleWebSearch, tone, onToneChange }) => {
   const inputRef = useRef(null);
 
   const handleSubmit = useCallback(
@@ -36,26 +42,17 @@ const ChatBox = ({ onSend, disabled }) => {
   return (
     <form className="chatbox-dock" onSubmit={handleSubmit}>
       <div className="chatbox-inner">
-        <button
-          type="button"
-          className="chatbox-attach"
-          title="Attach Proposal"
-          tabIndex={-1}
-        >
-          <Plus size={28} />
-        </button>
-
         <div className="chatbox-field">
           <textarea
             ref={inputRef}
             className="chatbox-input"
-            placeholder="Type your pitch idea..."
+            placeholder="Ask about our projects, clients, capabilities, or request a pitch..."
             disabled={disabled}
             autoFocus
             onInput={handleInput}
             onKeyDown={handleKeyDown}
             rows={1}
-            aria-label="Describe your client's need"
+            aria-label="Ask Dracarys"
           />
         </div>
 
@@ -63,15 +60,37 @@ const ChatBox = ({ onSend, disabled }) => {
           className="chatbox-send"
           type="submit"
           disabled={disabled}
-          aria-label="Generate proposal"
+          aria-label="Send message"
         >
-          <Send size={24} />
+          <Send size={20} />
         </button>
       </div>
 
-      <p className="chatbox-footer-text">
-        Dracarys can make mistakes. Consider verifying important claims.
-      </p>
+      <div className="chatbox-toolbar">
+        <button
+          type="button"
+          className={`web-toggle${webSearch ? " active" : ""}`}
+          onClick={() => onToggleWebSearch(!webSearch)}
+          title={webSearch ? "Web search on — click to disable" : "Web search off — click to enable"}
+        >
+          <Globe size={12} />
+          {webSearch ? "Web on" : "Web search"}
+        </button>
+
+        <div className="tone-selector" role="group" aria-label="Response tone">
+          {TONE_OPTIONS.map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              className={`tone-option${tone === opt.value ? " active" : ""}`}
+              onClick={() => onToneChange(opt.value)}
+              title={`Tone: ${opt.label}`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      </div>
     </form>
   );
 };

@@ -1,7 +1,10 @@
 import { useState } from "react";
 import { motion } from "motion/react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   Briefcase,
+  Globe,
   Wrench,
   ClipboardList,
   Star,
@@ -41,81 +44,101 @@ const getIcon = (heading) => {
   return Lightbulb;
 };
 
-const sectionVariants = {
-  hidden: { opacity: 0, y: 12 },
+const cardVariants = {
+  hidden: { opacity: 0, y: 14 },
   visible: (i) => ({
     opacity: 1,
     y: 0,
-    transition: { delay: i * 0.08, duration: 0.35, ease: "easeOut" },
+    transition: { delay: i * 0.07, duration: 0.3, ease: "easeOut" },
   }),
 };
 
 const ProposalPreview = ({ data }) => (
-  <div className="message-sidekick">
-    <div className="sidekick-bubble">
-      {data.sections?.map((section, i) => {
-        const Icon = getIcon(section.heading);
-        return (
-          <motion.div
-            key={i}
-            className={section.heading ? "proposal-section-inset" : "plain-section"}
-            custom={i}
-            variants={sectionVariants}
-            initial="hidden"
-            animate="visible"
-          >
-            {section.heading && (
-              <div className="section-heading-row">
-                <h3 className="proposal-section-heading">
-                  <Icon size={14} />
-                  {section.heading}
-                </h3>
-                <CopyButton text={section.content} />
-              </div>
-            )}
-            <p className="proposal-section-text">{section.content}</p>
-          </motion.div>
-        );
-      })}
+  <div className="proposal-response">
+    <p className="proposal-byline">Dracarys</p>
 
-      {data.sources?.length > 0 && (
+    {data.sections?.map((section, i) => {
+      const Icon = getIcon(section.heading);
+      return (
         <motion.div
-          className="proposal-section-inset"
-          custom={data.sections?.length ?? 0}
-          variants={sectionVariants}
+          key={i}
+          className="proposal-card"
+          custom={i}
+          variants={cardVariants}
           initial="hidden"
           animate="visible"
         >
-          <h3 className="proposal-section-heading">
-            <Inbox size={14} />
-            Generated Using
-          </h3>
-          <ul className="proposal-sources-list">
-            {data.sources.map((src) => {
-              const name = typeof src === "string" ? src : src.name;
-              const url = typeof src === "string" ? null : src.url;
-              return (
-                <li key={name}>
-                  {url ? (
-                    <a
-                      href={url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="source-link"
-                    >
-                      {name}
-                      <ExternalLink size={11} />
-                    </a>
-                  ) : (
-                    name
-                  )}
-                </li>
-              );
-            })}
-          </ul>
+          {section.heading ? (
+            <>
+              <div className="proposal-card-header">
+                <div className="proposal-card-icon">
+                  <Icon size={15} />
+                </div>
+                <h3 className="proposal-card-title">{section.heading}</h3>
+                <CopyButton text={section.content} />
+              </div>
+              <div className="proposal-card-body">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{section.content}</ReactMarkdown>
+              </div>
+            </>
+          ) : (
+            <div className="proposal-card-body plain">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{section.content}</ReactMarkdown>
+            </div>
+          )}
         </motion.div>
-      )}
-    </div>
+      );
+    })}
+
+    {(data.sources?.length > 0 || data.web_sources?.length > 0) && (
+      <motion.div
+        className="proposal-sources"
+        custom={data.sections?.length ?? 0}
+        variants={cardVariants}
+        initial="hidden"
+        animate="visible"
+      >
+        {data.sources?.length > 0 && (
+          <div className="proposal-sources-group">
+            <span className="proposal-sources-label">
+              <Inbox size={11} />
+              From our work
+            </span>
+            <div className="proposal-pills">
+              {data.sources.map((src) => {
+                const name = typeof src === "string" ? src : src.name;
+                const url = typeof src === "string" ? null : src.url;
+                return url ? (
+                  <a key={name} href={url} target="_blank" rel="noopener noreferrer" className="pill pill-kb">
+                    {name}
+                    <ExternalLink size={10} />
+                  </a>
+                ) : (
+                  <span key={name} className="pill pill-kb">{name}</span>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {data.web_sources?.length > 0 && (
+          <div className="proposal-sources-group">
+            <span className="proposal-sources-label">
+              <Globe size={11} />
+              Web
+            </span>
+            <div className="proposal-pills">
+              {data.web_sources.map((src) => (
+                <a key={src.url || src.name} href={src.url} target="_blank" rel="noopener noreferrer" className="pill pill-web">
+                  {src.name}
+                  <ExternalLink size={10} />
+                </a>
+              ))}
+            </div>
+          </div>
+        )}
+      </motion.div>
+    )}
   </div>
 );
 

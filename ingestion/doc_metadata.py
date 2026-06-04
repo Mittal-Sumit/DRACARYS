@@ -79,6 +79,14 @@ _DOC_METADATA = {
         "cloud": "GCP",
         "technologies": "GCP, BigQuery, React, Node.js, Cloud Dataflow",
     },
+    "Ganit_Corporate_Profile_RAG_Optimized.pdf": {
+        "client": "Ganit",
+        "display_name": "Ganit Corporate Profile",
+        "industry": "Data & Analytics Consulting",
+        "services": "Data Engineering, Business Intelligence, AI/ML, Cloud Analytics, Data Governance, Pre-sales",
+        "cloud": "AWS, Azure, GCP",
+        "technologies": "Azure Synapse, Power BI, Databricks, Snowflake, AWS Glue, BigQuery, Python, dbt",
+    },
 }
 
 _DEFAULTS = {

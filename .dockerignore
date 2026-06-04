@@ -1,0 +1,33 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Frontend — served by Vercel, not needed in the Docker image
+frontend/
+node_modules/
+
+# Secrets and local auth cache
+.env
+.msal_cache.json
+
+# Local databases
+*.db
+*.sqlite3
+
+# Git internals
+.git/
+.gitignore
+
+# Docs — PDFs served from Supabase Storage, not from the image
+docs/
+CLAUDE.md
+README.md
+
+# Any local HF Space clone
+hf-space/
+
+# Django collected static (regenerated in Dockerfile)
+backend/staticfiles/

@@ -28,6 +28,38 @@ def _get_reranker() -> CrossEncoder:
     return _reranker
 
 
+# ── BM25 cache ────────────────────────────────────────────────────────────────
+
+class _BM25Cache:
+    """Module-level cache for the BM25 index.
+
+    The index is rebuilt only when collection.count() changes — i.e. after
+    re-ingestion. This eliminates repeated full-collection loads across the
+    5–6 sequential retrieve() calls made per pitch request.
+    """
+
+    def __init__(self) -> None:
+        self._index = None
+        self._docs: list[str] = []
+        self._metas: list[dict] = []
+        self._count: int = -1
+
+    def get(self, collection):
+        """Return (bm25_index, docs, metas), rebuilding only if the collection changed."""
+        current = collection.count()
+        if self._index is None or self._count != current:
+            from rank_bm25 import BM25Okapi
+            all_data = collection.get(include=["documents", "metadatas"])
+            self._docs = all_data["documents"]
+            self._metas = all_data["metadatas"]
+            self._index = BM25Okapi([doc.lower().split() for doc in self._docs])
+            self._count = current
+        return self._index, self._docs, self._metas
+
+
+_bm25_cache = _BM25Cache()
+
+
 def retrieve(
     query: str,
     n_results: int = 10,
@@ -83,13 +115,8 @@ def retrieve(
     ]
 
     # ── 2. BM25 keyword search ─────────────────────────────────────────────
-    all_data = collection.get(include=["documents", "metadatas"])
-    all_docs = all_data["documents"]
-    all_metas = all_data["metadatas"]
-
-    from rank_bm25 import BM25Okapi
-    bm25 = BM25Okapi([doc.lower().split() for doc in all_docs])
-    bm25_scores = bm25.get_scores(query.lower().split())
+    bm25_index, all_docs, all_metas = _bm25_cache.get(collection)
+    bm25_scores = bm25_index.get_scores(query.lower().split())
 
     top_bm25_idx = sorted(range(len(bm25_scores)), key=lambda i: bm25_scores[i], reverse=True)[:fetch_n]
     bm25_chunks = [

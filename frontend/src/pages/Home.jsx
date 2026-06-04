@@ -1,13 +1,17 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { AlertTriangle, Trash2 } from "lucide-react";
+import { AlertTriangle } from "lucide-react";
 import Sidebar from "../components/Sidebar";
 import ChatBox from "../components/ChatBox";
 import Loader from "../components/Loader";
 import ProposalPreview from "../components/ProposalPreview";
-import { generateProposal } from "../api/api";
-
-const STORAGE_KEY = "dracarys_messages";
+import {
+  generateProposal,
+  getConversations,
+  getConversation,
+  deleteConversation,
+} from "../api/api";
+import { useAuth } from "../context/AuthContext";
 
 const WELCOME_MSG = {
   id: "welcome",
@@ -16,10 +20,10 @@ const WELCOME_MSG = {
 };
 
 const PROMPT_CHIPS = [
-  "Draft a proposal for a retail FMCG client",
+  "What FMCG projects have we delivered?",
   "What Azure experience do we have?",
-  "Pharma data platform pitch",
-  "Supply chain analytics capabilities",
+  "Generate a pitch for a pharma supply chain client",
+  "Explain our data warehousing capabilities",
 ];
 
 const CONVERSATIONAL_RE = /^(hi+|hello|hey|howdy|yo|sup|good\s+morning|good\s+afternoon|good\s+evening|thanks|thank\s+you|ok+|okay|yes|no+|bye|great|cool|nice|test|ping|check)[\s!?.]*$/i;
@@ -36,35 +40,80 @@ const messageVariants = {
   },
 };
 
+const dbMsgToReact = (msg) => ({
+  id: msg.id,
+  role: msg.role,
+  ...(msg.proposal_data ? { proposalData: msg.proposal_data } : { text: msg.text }),
+});
+
 const Home = () => {
-  const [messages, setMessages] = useState(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        return parsed.length > 0 ? [WELCOME_MSG, ...parsed] : [WELCOME_MSG];
-      }
-    } catch {}
-    return [WELCOME_MSG];
-  });
+  const { user } = useAuth();
+
+  const [messages, setMessages] = useState([WELCOME_MSG]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [webSearch, setWebSearch] = useState(false);
+  const [tone, setTone] = useState("balanced");
+  const [conversations, setConversations] = useState([]);
+  const [activeConversationId, setActiveConversationId] = useState(null);
+
   const chatEndRef = useRef(null);
+  const prevUserRef = useRef(user);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
 
+  // On login: load conversation list and most-recent conversation.
+  // On logout: reset to blank state.
   useEffect(() => {
-    const toSave = messages.filter((m) => m.id !== "welcome");
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
-  }, [messages]);
+    if (user === prevUserRef.current) return;
+    prevUserRef.current = user;
 
-  const handleClear = useCallback(() => {
+    if (user) {
+      getConversations()
+        .then(async (convs) => {
+          setConversations(convs);
+          if (convs.length > 0) {
+            const conv = await getConversation(convs[0].id);
+            setMessages([WELCOME_MSG, ...conv.messages.map(dbMsgToReact)]);
+            setActiveConversationId(convs[0].id);
+          }
+        })
+        .catch(() => {});
+    } else {
+      setMessages([WELCOME_MSG]);
+      setConversations([]);
+      setActiveConversationId(null);
+    }
+  }, [user]);
+
+  const handleNewChat = useCallback(() => {
     setMessages([WELCOME_MSG]);
-    localStorage.removeItem(STORAGE_KEY);
+    setActiveConversationId(null);
     setError(null);
   }, []);
+
+  const handleSelectConversation = useCallback(async (id) => {
+    if (id === activeConversationId) return;
+    try {
+      const conv = await getConversation(id);
+      setMessages([WELCOME_MSG, ...conv.messages.map(dbMsgToReact)]);
+      setActiveConversationId(id);
+      setError(null);
+    } catch {}
+  }, [activeConversationId]);
+
+  const handleDeleteConversation = useCallback(async (id) => {
+    try {
+      await deleteConversation(id);
+      setConversations((prev) => prev.filter((c) => c.id !== id));
+      if (activeConversationId === id) {
+        setMessages([WELCOME_MSG]);
+        setActiveConversationId(null);
+      }
+    } catch {}
+  }, [activeConversationId]);
 
   const handleSend = useCallback(async (query) => {
     const userMsg = { id: Date.now(), role: "user", text: query };
@@ -76,7 +125,7 @@ const Home = () => {
         {
           id: Date.now() + 1,
           role: "assistant",
-          text: "I'm best at generating proposals! Describe the client's need or industry — e.g. \"supply chain dashboard for a retail FMCG client\" — and I'll draft something grounded in our past work.",
+          text: "I'm here to help with your sales conversations! Ask me about our past projects, industry experience, or technical capabilities — or ask me to generate a pitch for a specific client.",
         },
       ]);
       return;
@@ -86,7 +135,7 @@ const Home = () => {
     setError(null);
 
     try {
-      const result = await generateProposal(query);
+      const result = await generateProposal(query, webSearch, activeConversationId, tone);
 
       const assistantMsg = {
         id: Date.now() + 1,
@@ -94,18 +143,36 @@ const Home = () => {
         proposalData: result,
       };
       setMessages((prev) => [...prev, assistantMsg]);
+
+      if (user && result.conversation_id) {
+        const newId = result.conversation_id;
+        setActiveConversationId(newId);
+        setConversations((prev) => {
+          if (prev.some((c) => c.id === newId)) return prev;
+          return [
+            { id: newId, title: result.conversation_title, created_at: new Date().toISOString() },
+            ...prev,
+          ];
+        });
+      }
     } catch (err) {
       const msg =
-        err.response?.data?.error || "Failed to generate proposal. Please try again.";
+        err.response?.data?.error || "Failed to get a response. Please try again.";
       setError(msg);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [webSearch, tone, activeConversationId, user]);
 
   return (
     <div className="layout">
-      <Sidebar />
+      <Sidebar
+        conversations={conversations}
+        activeConversationId={activeConversationId}
+        onSelectConversation={handleSelectConversation}
+        onNewChat={handleNewChat}
+        onDeleteConversation={handleDeleteConversation}
+      />
       <main className="main">
         {/* Mobile header */}
         <header className="mobile-header">
@@ -126,13 +193,11 @@ const Home = () => {
 
         {/* Chat area */}
         <div className="chat-area" id="chat-container">
-          {/* Date separator + clear */}
           <div className="chat-date">
             <span>Today</span>
             {messages.length > 1 && (
-              <button className="clear-btn" onClick={handleClear} title="Clear chat">
-                <Trash2 size={12} />
-                Clear
+              <button className="clear-btn" onClick={handleNewChat} title="New chat">
+                + New chat
               </button>
             )}
           </div>
@@ -211,7 +276,14 @@ const Home = () => {
 
         {/* Floating input dock */}
         <div className="input-dock">
-          <ChatBox onSend={handleSend} disabled={loading} />
+          <ChatBox
+            onSend={handleSend}
+            disabled={loading}
+            webSearch={webSearch}
+            onToggleWebSearch={setWebSearch}
+            tone={tone}
+            onToneChange={setTone}
+          />
         </div>
       </main>
     </div>

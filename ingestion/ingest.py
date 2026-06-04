@@ -22,7 +22,7 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).parent.parent / ".env")
 
-_CHROMA_DIR = str(Path(__file__).parent.parent / "chroma_db")
+_CHROMA_DIR = os.getenv("CHROMA_DB_PATH") or str(Path(__file__).parent.parent / "chroma_db")
 _COLLECTION_NAME = "proposals"
 
 

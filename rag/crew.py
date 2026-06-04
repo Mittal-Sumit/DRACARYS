@@ -19,12 +19,21 @@ Why this beats single-shot RAG:
 import json
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+import litellm
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
 load_dotenv(Path(__file__).parent.parent / ".env")
+
+litellm.cache = None
+
+# CrewAI 1.14+ marks every message with cache_breakpoint for Anthropic prompt caching.
+# Groq rejects requests that contain this field. Patch it out before any agent runs.
+import crewai.llms.cache as _crewai_cache
+_crewai_cache.mark_cache_breakpoint = lambda msg: msg
 
 from crewai import Agent, Crew, LLM, Process, Task
 from crewai.tools import BaseTool
@@ -32,18 +41,27 @@ from crewai.tools import BaseTool
 from rag.retriever import retrieve
 
 _GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
-_GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+_TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
+
+_GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+
+from rag.groq_keys import GroqQuotaExhaustedError, is_rotatable_error, key_manager
 
 
 def _make_llm(temperature: float = 0.4) -> LLM:
+    # Use Groq's OpenAI-compatible endpoint without a provider prefix.
+    # The groq/ prefix routes through litellm's Groq provider which generates
+    # hermes-style XML tool calls that Groq's API rejects. The openai path
+    # uses standard JSON function calling which Groq accepts.
     return LLM(
-        model=f"groq/{_GROQ_MODEL}",
-        api_key=_GROQ_API_KEY,
+        model=_GROQ_MODEL,
+        base_url=_GROQ_BASE_URL,
+        api_key=key_manager.current,
         temperature=temperature,
     )
 
 
-# ── KB Search Tool ────────────────────────────────────────────────────────────
+# ── Tools ─────────────────────────────────────────────────────────────────────
 
 class _SearchInput(BaseModel):
     query: str = Field(description="The search query to run against the knowledge base")
@@ -57,11 +75,14 @@ class SearchKBTool(BaseTool):
         "Call this multiple times with different queries to explore different angles."
     )
     args_schema: type[BaseModel] = _SearchInput
-    found_sources: list[str] = Field(default_factory=list)
+    found_sources: list[dict] = Field(default_factory=list)  # [{name, file}]
+    n_results: int = Field(default=8)
+    max_per_file: int = Field(default=3)
+    text_limit: int = Field(default=1000)
 
     def _run(self, query: str) -> str:
         try:
-            chunks = retrieve(query, n_results=8, max_per_file=3)
+            chunks = retrieve(query, n_results=self.n_results, max_per_file=self.max_per_file)
         except RuntimeError as exc:
             raise  # propagate empty-DB error
 
@@ -72,27 +93,82 @@ class SearchKBTool(BaseTool):
         for chunk in chunks:
             display = chunk.get("display_name") or chunk["file"]
             score = chunk.get("score", 0.0)
-            if display not in self.found_sources:
-                self.found_sources.append(display)
+            if not any(s["name"] == display for s in self.found_sources):
+                self.found_sources.append({"name": display, "file": chunk["file"]})
             lines.append(f"[Source: {display} | relevance: {score:.3f}]")
-            lines.append(chunk["text"][:600].strip())
+            lines.append(chunk["text"][:self.text_limit].strip())
             lines.append("")
         return "\n".join(lines)
+
+
+class _WebSearchInput(BaseModel):
+    query: str = Field(description="The search query to run against the web")
+
+
+class SearchWebTool(BaseTool):
+    name: str = "search_web"
+    description: str = (
+        "Search the web for market data, industry benchmarks, client background, "
+        "and external context such as industry trends, market size, or technology reports. "
+        "Use this for questions about the external world — NOT for our internal project experience. "
+        "For our own past work, always use search_knowledge_base instead."
+    )
+    args_schema: type[BaseModel] = _WebSearchInput
+    found_web_sources: list[dict] = Field(default_factory=list)
+
+    def _run(self, query: str) -> str:
+        if not _TAVILY_API_KEY:
+            return "Web search unavailable — TAVILY_API_KEY not configured."
+
+        print(f"[SearchWebTool] Searching web: {query!r}")
+        try:
+            from tavily import TavilyClient
+            results = TavilyClient(api_key=_TAVILY_API_KEY).search(
+                query, max_results=5, search_depth="basic"
+            )
+        except Exception as exc:
+            return f"Web search failed: {exc}"
+
+        lines = []
+        for r in results.get("results", []):
+            title = r.get("title", "")
+            url = r.get("url", "")
+            content = r.get("content", "")
+            source = {"name": title, "url": url}
+            if source not in self.found_web_sources:
+                self.found_web_sources.append(source)
+            lines.append(f"[{title}]({url})")
+            lines.append(content[:500].strip())
+            lines.append("")
+
+        return "\n".join(lines) or "No web results found."
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _is_pitch_request(query: str) -> bool:
+    """Detect complex pitch/proposal requests that need full structured multi-section output."""
+    q = query.lower()
+    return any(kw in q for kw in [
+        "pitch", "proposal", "solution approach", "implementation roadmap",
+        "high-level architecture", "business outcome", "create a client",
+        "generate a pitch", "write a pitch", "prepare a", "develop a pitch",
+    ])
 
 
 # ── Agents ────────────────────────────────────────────────────────────────────
 
 def _build_planner(llm: LLM) -> Agent:
     return Agent(
-        role="Pre-Sales Research Strategist",
+        role="Sales Intelligence Strategist",
         goal=(
-            "Analyse the user's request and produce 3–4 targeted search queries "
-            "that will surface the most relevant past projects and capabilities "
+            "Analyse the user's question and produce 3–4 targeted search queries "
+            "that will surface the most relevant past projects, capabilities, and experience "
             "from the knowledge base."
         ),
         backstory=(
-            "You are a pre-sales strategist who knows exactly how to find relevant past work. "
-            "You break requests into focused search angles: industry experience, technical capability, "
+            "You are a sales intelligence strategist who knows exactly how to find relevant past work. "
+            "You break questions into focused search angles: industry experience, technical capability, "
             "client outcomes, and specific cloud/platform matches. "
             "You output a JSON search plan and nothing else."
         ),
@@ -102,20 +178,26 @@ def _build_planner(llm: LLM) -> Agent:
     )
 
 
-def _build_researcher(llm: LLM, kb_tool: SearchKBTool) -> Agent:
+def _build_researcher(llm: LLM, tools: list) -> Agent:
+    has_web = any(isinstance(t, SearchWebTool) for t in tools)
+    goal = (
+        "Execute every search query from the plan using search_knowledge_base AND search_web. "
+        "Synthesise findings into two strictly separated briefs: one for internal KB facts, "
+        "one for web/market context. Never mix content between the two sections."
+        if has_web else
+        "Execute every search query from the plan using search_knowledge_base. "
+        "Synthesise all findings into an exhaustive, fact-rich research brief."
+    )
     return Agent(
         role="Research Analyst",
-        goal=(
-            "Execute every search query from the plan using search_knowledge_base. "
-            "Synthesise all findings into an exhaustive, fact-rich research brief."
-        ),
+        goal=goal,
         backstory=(
             "You are a meticulous research analyst. You run every query from the plan "
             "before writing anything. You extract specific facts: client names, cloud platforms, "
             "technologies, delivery timelines, and measurable outcomes. "
             "You never invent facts — you only report what the sources say."
         ),
-        tools=[kb_tool],
+        tools=tools,
         llm=llm,
         allow_delegation=False,
         verbose=False,
@@ -124,16 +206,18 @@ def _build_researcher(llm: LLM, kb_tool: SearchKBTool) -> Agent:
 
 def _build_writer(llm: LLM) -> Agent:
     return Agent(
-        role="Senior Proposal Writer",
+        role="Sales Intelligence Assistant",
         goal=(
-            "Using only the research brief, write a compelling, specific response. "
+            "Using only the research brief, answer the user's question directly and accurately. "
             "Output a valid JSON object with the exact schema specified."
         ),
         backstory=(
-            "You are a senior proposal writer at a data & analytics consulting firm. "
-            "You write as 'we'. You cite specific project names, technologies, and outcomes. "
-            "You never use filler phrases. You write comprehensive, structured responses. "
-            "You never invent clients, metrics, or technologies not found in the research brief."
+            "You are a knowledgeable sales intelligence assistant at a data & analytics consulting firm. "
+            "You have deep familiarity with every past client project and delivery. "
+            "You answer like a senior solutions consultant — directly, specifically, grounded in real work. "
+            "You write as 'we' when referring to internal experience. "
+            "You cite specific client names, technologies, and outcomes. "
+            "You never use filler phrases. You never invent facts not in the research brief."
         ),
         llm=llm,
         allow_delegation=False,
@@ -144,26 +228,88 @@ def _build_writer(llm: LLM) -> Agent:
 # ── Tasks ─────────────────────────────────────────────────────────────────────
 
 def _plan_task(query: str, planner: Agent) -> Task:
+    pitch = _is_pitch_request(query)
+    if pitch:
+        strategy = (
+            "This is a complex pitch or proposal request. Generate 5–6 targeted search queries:\n"
+            "  • One query for EACH major topic or section explicitly named in the request "
+            "(e.g. solution approach, architecture, governance, implementation roadmap, "
+            "business outcomes, relevant experience).\n"
+            "  • One query specifically for pharma/healthcare industry case studies and delivery experience.\n"
+            "  • One query targeting the specific source systems and cloud platform mentioned "
+            "(e.g. SAP, LIMS, MES, Salesforce, Azure, regulatory data).\n"
+            "  • One query for company capabilities, credentials, and delivery differentiators.\n"
+        )
+        count_hint = "5–6"
+    else:
+        strategy = "Generate 3–4 targeted search queries to find the most relevant content.\n"
+        count_hint = "3–4"
+
     return Task(
         description=(
             f'User request: "{query}"\n\n'
-            "Generate 3–4 targeted search queries to find the most relevant content.\n"
-            "Think about:\n"
-            "  1. The industry or domain (e.g. pharma, FMCG, banking, automotive, healthcare)\n"
-            "  2. Technical capabilities needed (e.g. data warehouse, ML, BI, data engineering)\n"
-            "  3. Similar past outcomes (e.g. demand forecasting, predictive maintenance)\n"
-            "  4. Cloud or platform mentioned (e.g. Azure, AWS, GCP, Microsoft Fabric)\n\n"
+            + strategy
+            + "\nFor every query, consider:\n"
+            "  1. Industry or domain (e.g. pharma, FMCG, banking, automotive, healthcare)\n"
+            "  2. Technical capabilities (e.g. data warehouse, ML, BI, data engineering)\n"
+            "  3. Source systems named (e.g. SAP, Salesforce, LIMS, MES, Veeva, regulatory data)\n"
+            "  4. Cloud platform and specific services (e.g. Azure, AWS, GCP, Microsoft Fabric)\n"
+            "  5. Compliance, governance, or regulatory requirements\n"
+            "  6. Measurable outcomes (e.g. supply chain visibility, compliance reporting, KPI unification)\n\n"
             "Output ONLY this JSON — no other text:\n"
-            '{"queries": ["query 1", "query 2", "query 3"]}'
+            '{"queries": ["query 1", "query 2", ...]}'
         ),
-        expected_output='A JSON object: {"queries": ["...", "...", "..."]}',
+        expected_output=f'A JSON object with {count_hint} queries: {{"queries": ["...", ...]}}',
         agent=planner,
     )
 
 
-def _research_task(researcher: Agent, context: list[Task]) -> Task:
-    return Task(
-        description=(
+def _research_task(
+    researcher: Agent,
+    context: list[Task],
+    use_web_search: bool = False,
+    is_pitch: bool = False,
+) -> Task:
+    pitch_kb_extra = (
+        "\n\nThis is a pitch/proposal request — extract with maximum depth. "
+        "For EACH case study found:\n"
+        "  • Client name, industry, country/geography, and scale\n"
+        "  • Exact technologies and cloud services used (name every one)\n"
+        "  • Specific measurable outcomes — copy percentages, volumes, and timelines verbatim from the source\n"
+        "  • Which of the user's requested pitch sections (solution approach, architecture, governance, "
+        "roadmap, outcomes, relevant experience) this case study most directly supports\n"
+        "Do not paraphrase or summarise — extract actual facts. "
+        "Explicitly flag any requested section for which the KB had no relevant content."
+    ) if is_pitch else ""
+
+    if use_web_search:
+        description = (
+            "Run each search query from the plan using BOTH search_knowledge_base AND search_web. "
+            "Run ALL queries against both tools before synthesising — do not skip any.\n\n"
+            "Output your brief in exactly these two labelled sections — no exceptions:\n\n"
+            "=== INTERNAL KB BRIEF ===\n"
+            "Facts from search_knowledge_base ONLY. Cover:\n"
+            "  • Each relevant project — client name, industry, what was built, outcomes, metrics\n"
+            "  • Technologies, cloud platforms, timelines, scale\n"
+            "  • Source document names\n"
+            "If no KB results found, write: No relevant internal projects found.\n"
+            + pitch_kb_extra + "\n\n"
+            "=== WEB RESEARCH BRIEF ===\n"
+            "Context from search_web ONLY. Cover:\n"
+            "  • Market size, industry trends, benchmarks\n"
+            "  • Client company background if relevant\n"
+            "  • Technology adoption data or analyst reports\n"
+            "Always note the source title and URL for each fact.\n"
+            "If no web results found, write: No relevant web context found.\n\n"
+            "CRITICAL: Never move a fact from one section to the other. "
+            "Never blend internal and web content."
+        )
+        expected_output = (
+            "Two labelled sections: '=== INTERNAL KB BRIEF ===' with internal project facts, "
+            "and '=== WEB RESEARCH BRIEF ===' with external market context."
+        )
+    else:
+        description = (
             "Run each search query from the plan using search_knowledge_base. "
             "Run ALL queries before synthesising — do not skip any.\n\n"
             "Your research brief must cover:\n"
@@ -173,42 +319,152 @@ def _research_task(researcher: Agent, context: list[Task]) -> Task:
             "  • Any specific timelines, scale, or volume details\n"
             "  • Which source documents contained the most relevant information\n\n"
             "Be exhaustive. Every specific fact in the sources should appear in your brief."
-        ),
-        expected_output=(
+            + pitch_kb_extra
+        )
+        expected_output = (
             "A structured research brief covering all relevant projects, technologies, "
             "outcomes, and source document names."
-        ),
+        )
+
+    return Task(
+        description=description,
+        expected_output=expected_output,
         agent=researcher,
         context=context,
     )
 
 
-def _write_task(query: str, writer: Agent, context: list[Task]) -> Task:
+_TONE_INSTRUCTIONS = {
+    "technical": (
+        "AUDIENCE & TONE — Technical:\n"
+        "Write for solutions architects, data engineers, and CTOs. "
+        "Use precise technical terminology: name specific services (e.g. Azure Data Factory, ADLS Gen2, Databricks, Purview), "
+        "data patterns (medallion architecture, CDC, ELT/ETL, streaming), and implementation details. "
+        "Include architecture rationale, data flow specifics, and technology trade-offs. "
+        "Lead with the how — pipeline design, integration approach, technology choices. "
+        "Business outcomes should anchor each section, but technical depth is the priority.\n\n"
+    ),
+    "executive": (
+        "AUDIENCE & TONE — Executive:\n"
+        "Write for CEOs, CFOs, and CDOs who make investment decisions. "
+        "Every sentence must answer 'so what?' from a business perspective. "
+        "Translate all technical elements into plain business language — "
+        "'automated data pipelines' not 'Azure Data Factory', "
+        "'a structured data quality framework' not 'medallion architecture'. "
+        "Quantify everything in business terms: time saved, cost reduced, risk eliminated, decisions accelerated. "
+        "Avoid all acronyms — if one is unavoidable, define it immediately in plain language. "
+        "Never describe what a technology is — only say what it delivers for the business. "
+        "Write like a trusted advisor, not a vendor pitching features.\n\n"
+    ),
+    "balanced": "",
+}
+
+
+def _write_task(query: str, writer: Agent, context: list[Task], use_web_search: bool = False, tone: str = "balanced") -> Task:
+    is_pitch = _is_pitch_request(query)
+    tone_instruction = _TONE_INSTRUCTIONS.get(tone, "")
+
+    base_rules = (
+        "  1. NUMBER CITATION RULE (non-negotiable): Before writing any number, percentage, timeframe, or metric, "
+        "ask yourself: 'Does this exact figure appear in the research brief?' "
+        "If YES — use it and attribute it to the source. "
+        "If NO — do not state it as fact. Replace with hedged language: "
+        "'potential benefits may include...', 'clients in similar engagements have seen...', "
+        "or 'expected to reduce...' Never present an inferred, estimated, or rounded figure as a confirmed outcome.\n"
+        "  2. Never invent clients, projects, or technologies not in the brief.\n"
+        "  3. No filler: avoid 'leveraging', 'strategic', 'well-positioned', 'robust', 'seamlessly', 'end-to-end'.\n"
+        "  4. Be specific — cite exact client names, platforms, and metrics from the brief. "
+        "Generic statements like 'we have pharma experience' without a named client are not acceptable.\n"
+        "  5. For pitches: connect each case study outcome directly to the prospect's stated challenge. "
+        "Don't just describe what you did — explain why it applies to this specific client.\n"
+        "  6. Depth matters — develop each point fully. Don't truncate or summarise where the brief has detail.\n"
+        "  7. Use markdown in `content` to aid readability: **bold** for client names, technology names, and key metrics; "
+        "bullet lists (- item) for enumerable items; numbered lists (1. item) for steps or sequences; "
+        "blank line between paragraphs; > blockquote for a key highlight or standout fact. "
+        "Do NOT use backtick code formatting (`...`) for product names, technology names, or project names — "
+        "only use backticks for actual code: SQL snippets, CLI commands, or config values. "
+        "Format purposefully — only where it genuinely helps the reader.\n"
+    )
+
+    if is_pitch and tone == "executive":
+        section_rules = (
+            "Structure your response with EXACTLY these 7 sections in this exact order. "
+            "Use these headings verbatim:\n"
+            "  1. Business Challenges — Frame the client's pain points as business problems. "
+            "Show you understand their world: operational risk, compliance exposure, missed decisions. "
+            "No technical terminology.\n"
+            "  2. Business Impact — Quantify the cost of inaction. What is the business paying today "
+            "for siloed systems, manual processes, and poor visibility? Make the status quo feel expensive.\n"
+            "  3. Expected Outcomes — Concrete, measurable business results the client can expect: "
+            "time saved, cost reduced, compliance risk eliminated, decisions accelerated. "
+            "Outcomes only — never restate a challenge as an outcome.\n"
+            "  4. Relevant Experience — 2–3 named client proof points from the KB brief. "
+            "For each: state the business problem, what we delivered, and the measurable result. "
+            "Connect each explicitly to one of the client's stated challenges.\n"
+            "  5. Why Ganit — Our differentiators and why we are the right partner for this engagement. "
+            "Draw from the Ganit Corporate Profile in the brief. Specific claims only — no generic consulting language.\n"
+            "  6. Key Discussion Points — 4–5 strategic conversation starters for the meeting "
+            "that demonstrate understanding of their business and open meaningful dialogue.\n"
+            "  7. Discovery Questions — 4–6 open-ended questions to ask the client to uncover "
+            "deeper priorities, constraints, and decision criteria.\n\n"
+            "Each section must have its heading exactly as listed above. "
+            "Develop each section fully — no one-paragraph sections.\n\n"
+        )
+    elif is_pitch:
+        section_rules = (
+            "Structure your response:\n"
+            "  • This is a pitch/proposal request.\n"
+            "  • If the user explicitly listed sections (e.g. 'solution approach, architecture, governance, "
+            "roadmap, outcomes, experience'), generate EVERY one as its own section in the exact order listed. "
+            "Never merge, skip, or rename an explicitly requested section.\n"
+            "  • If no explicit sections were listed, use these in order: Problem Understanding, "
+            "Solution Approach, High-Level Architecture, Data Governance & Compliance, "
+            "Implementation Roadmap, Expected Business Outcomes, Relevant Experience.\n"
+            "  • Each section must be fully developed — minimum 3 substantive paragraphs or equivalent "
+            "structured bullet groups. A one-paragraph section for a pitch is not acceptable.\n\n"
+        )
+    else:
+        section_rules = (
+            "Structure your response:\n"
+            "  • Direct question: 1 section, heading=null, answer it fully\n"
+            "  • Multi-part answer: 2–3 sections with concise descriptive headings\n"
+            "  • General pitch/proposal: 5–6 sections (Solution Approach, Architecture, Roadmap, Outcomes, Experience)\n"
+            "  Default to fewer sections — only add one when the content genuinely warrants it.\n\n"
+        )
+
+    if use_web_search:
+        source_rules = (
+            "\nSOURCE ATTRIBUTION (non-negotiable):\n"
+            "  KB brief → first-person only: 'We delivered X', 'In our work with Client Y, we...'\n"
+            "  Web brief → always attributed inline: 'According to [Source Name]', 'Research from [Source] shows'\n"
+            "  Never use 'we' for web-sourced facts. Never blend KB and web claims in the same sentence.\n"
+            "  If KB and web data conflict, use KB and ignore web.\n"
+        )
+        sources_instruction = "  8. 'sources': list only internal KB document names cited.\n"
+    else:
+        source_rules = ""
+        sources_instruction = "  8. 'sources': list only source document names actually cited.\n"
+
+    description = (
+        f'User question: "{query}"\n\n'
+        + tone_instruction
+        + "Using ONLY the research brief above, answer the user's question.\n\n"
+        + section_rules
+        + "Rules:\n"
+        + base_rules
+        + sources_instruction
+        + source_rules
+        + "\nYOUR ENTIRE RESPONSE MUST BE A SINGLE JSON OBJECT. "
+        "No preamble, no explanation, no text before or after. Start with { and end with }.\n"
+        '{"sections": [{"heading": "Title or null", "content": "markdown content"}], '
+        '"sources": ["Source Name 1"]}'
+    )
+
     return Task(
-        description=(
-            f'Original user request: "{query}"\n\n'
-            "Using ONLY the research brief above, write the response.\n\n"
-            "Choose response type based on the request:\n"
-            "  PROPOSAL (e.g. 'generate a proposal', 'draft a pitch', 'write a proposal for X'):\n"
-            "    → 3–5 sections. Choose headings that fit THIS specific request.\n"
-            "    → Examples: 'Our Approach', 'Relevant Experience', 'Technical Architecture',\n"
-            "       'Why We're the Right Partner', 'What We've Delivered'\n"
-            "  QUESTION (e.g. 'what experience do we have with X', 'have we done Y work'):\n"
-            "    → 1–2 sections answering directly with specific evidence\n"
-            "  CONVERSATIONAL (e.g. 'what can you do', 'tell me about the firm'):\n"
-            "    → 1–2 short paragraphs. Set heading to null.\n\n"
-            "Rules:\n"
-            "  1. Use ONLY information from the research brief. Never invent.\n"
-            "  2. Write as 'we'. No filler: avoid 'leveraging', 'strategic', 'well-positioned'.\n"
-            "  3. Be specific — cite project names, platforms, outcomes, metrics.\n"
-            "  4. Comprehensive answers beat brief ones. Do not truncate proposals.\n"
-            "  5. Sources: list only source document names actually cited.\n\n"
-            "Output ONLY this JSON (no markdown code fences, no text outside the JSON):\n"
-            '{"sections": [{"heading": "Title or null", "content": "..."}], '
-            '"sources": ["Source Name 1", "Source Name 2"]}'
-        ),
+        description=description,
         expected_output=(
-            'JSON: {"sections": [{"heading": "string or null", "content": "string"}], '
+            'A single JSON object and nothing else: '
+            '{"sections": [{"heading": "string or null", "content": "string"}], '
             '"sources": ["string"]}'
         ),
         agent=writer,
@@ -216,92 +472,398 @@ def _write_task(query: str, writer: Agent, context: list[Task]) -> Task:
     )
 
 
+def _parse_queries(plan_result) -> list[str]:
+    """Extract the query list from the planner's crew output."""
+    raw = getattr(plan_result, "raw", None) or str(plan_result)
+    raw = raw.strip()
+
+    def _try(text: str) -> list[str] | None:
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict) and "queries" in parsed:
+                qs = [q for q in parsed["queries"] if isinstance(q, str) and q.strip()]
+                return qs or None
+        except (json.JSONDecodeError, ValueError):
+            return None
+
+    result = _try(raw)
+    if result:
+        return result
+
+    # Try extracting JSON object from inside surrounding text
+    start, end = raw.rfind("{"), raw.rfind("}") + 1
+    if start != -1 and end > start:
+        result = _try(raw[start:end])
+        if result:
+            return result
+
+    # Fallback: treat the whole output as one query
+    return [raw[:500]] if raw else []
+
+
+# ── S3: Parallel KB fetch ─────────────────────────────────────────────────────
+
+def _parallel_kb_fetch(
+    queries: list[str],
+    n_results: int,
+    max_per_file: int,
+    text_limit: int,
+) -> tuple[str, list[dict]]:
+    """Run all KB searches simultaneously and return (kb_brief_text, found_sources).
+
+    Replaces the sequential tool-call loop inside the researcher agent.
+    All queries are independent so they can all start at the same time.
+    """
+    found_sources: list[dict] = []
+    seen_names: set[str] = set()
+    results_by_query: dict[str, list[dict]] = {}
+
+    def _fetch_one(q: str) -> tuple[str, list[dict]]:
+        try:
+            return q, retrieve(q, n_results=n_results, max_per_file=max_per_file)
+        except RuntimeError:
+            raise  # ChromaDB empty — must propagate
+        except Exception:
+            return q, []
+
+    max_workers = min(len(queries), 6)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_fetch_one, q): q for q in queries}
+        for future in as_completed(futures):
+            q, chunks = future.result()  # RuntimeError propagates here if DB empty
+            results_by_query[q] = chunks
+            for chunk in chunks:
+                display = chunk.get("display_name") or chunk["file"]
+                if display not in seen_names:
+                    found_sources.append({"name": display, "file": chunk["file"]})
+                    seen_names.add(display)
+
+    # Format into a structured text block for the researcher
+    lines = ["=== PRE-FETCHED KNOWLEDGE BASE RESULTS ===\n"]
+    for q in queries:  # preserve planner's original query order
+        chunks = results_by_query.get(q, [])
+        lines.append(f"--- Query: {q} ---")
+        if not chunks:
+            lines.append("No relevant results found.\n")
+            continue
+        for chunk in chunks:
+            display = chunk.get("display_name") or chunk["file"]
+            score = chunk.get("score", 0.0)
+            lines.append(f"[Source: {display} | relevance: {score:.3f}]")
+            lines.append(chunk["text"][:text_limit].strip())
+            lines.append("")
+
+    return "\n".join(lines), found_sources
+
+
+# ── Researcher variant: pre-fetched KB ────────────────────────────────────────
+
+def _build_researcher_with_context(llm: LLM, tools: list) -> Agent:
+    """Researcher agent when KB results are pre-fetched and injected as text.
+    Has no KB tool — only SearchWebTool if web search is enabled.
+    """
+    has_web = any(isinstance(t, SearchWebTool) for t in tools)
+    goal = (
+        "Analyse the provided knowledge base results and any web search findings. "
+        "Synthesise into two strictly separated briefs: one for internal KB facts, "
+        "one for web/market context. Never mix content between sections."
+        if has_web else
+        "Analyse the provided knowledge base results and synthesise them into "
+        "an exhaustive, fact-rich research brief."
+    )
+    return Agent(
+        role="Research Analyst",
+        goal=goal,
+        backstory=(
+            "You are a meticulous research analyst. You are given pre-retrieved knowledge base results "
+            "and extract specific facts: client names, cloud platforms, technologies, delivery timelines, "
+            "and measurable outcomes. You never invent facts — you only report what the sources say."
+        ),
+        tools=tools,
+        llm=llm,
+        allow_delegation=False,
+        verbose=False,
+    )
+
+
+def _research_task_with_kb_context(
+    researcher: Agent,
+    query: str,
+    kb_context: str,
+    use_web_search: bool = False,
+    is_pitch: bool = False,
+) -> Task:
+    """Research task with KB results already injected — no KB tool calls needed."""
+    pitch_kb_extra = (
+        "\n\nThis is a pitch/proposal request — extract with maximum depth. "
+        "For EACH case study found:\n"
+        "  • Client name, industry, country/geography, and scale\n"
+        "  • Exact technologies and cloud services used (name every one)\n"
+        "  • Specific measurable outcomes — copy percentages, volumes, and timelines verbatim\n"
+        "  • Which of the user's requested pitch sections this case study most directly supports\n"
+        "Do not paraphrase — extract actual facts. "
+        "Flag any requested section for which the KB had no relevant content."
+    ) if is_pitch else ""
+
+    if use_web_search:
+        description = (
+            f'User query: "{query}"\n\n'
+            "The knowledge base has already been searched. Results are below:\n\n"
+            + kb_context
+            + "\n\nNow use search_web to gather external market context for this query.\n\n"
+            "Output your brief in exactly these two labelled sections — no exceptions:\n\n"
+            "=== INTERNAL KB BRIEF ===\n"
+            "Synthesise the PRE-FETCHED KNOWLEDGE BASE RESULTS above. Cover:\n"
+            "  • Each relevant project — client name, industry, what was built, outcomes, metrics\n"
+            "  • Technologies, cloud platforms, timelines, scale\n"
+            "  • Source document names\n"
+            "If no KB results found, write: No relevant internal projects found.\n"
+            + pitch_kb_extra + "\n\n"
+            "=== WEB RESEARCH BRIEF ===\n"
+            "Context from search_web ONLY. Cover:\n"
+            "  • Market size, industry trends, benchmarks\n"
+            "  • Client company background if relevant\n"
+            "  • Technology adoption data or analyst reports\n"
+            "Always note the source title and URL for each fact.\n"
+            "If no web results found, write: No relevant web context found.\n\n"
+            "CRITICAL: Never move a fact from one section to the other. "
+            "Never blend internal and web content."
+        )
+        expected_output = (
+            "Two labelled sections: '=== INTERNAL KB BRIEF ===' with internal project facts, "
+            "and '=== WEB RESEARCH BRIEF ===' with external market context."
+        )
+    else:
+        description = (
+            f'User query: "{query}"\n\n'
+            "The knowledge base has already been searched. Results are below:\n\n"
+            + kb_context
+            + "\n\nSynthesise these results into a research brief covering:\n"
+            "  • Each relevant project — client name, industry, what was built, "
+            "specific outcomes and metrics\n"
+            "  • Technologies and cloud platforms mentioned across all sources\n"
+            "  • Any specific timelines, scale, or volume details\n"
+            "  • Which source documents contained the most relevant information\n\n"
+            "Be exhaustive. Every specific fact in the sources should appear in your brief."
+            + pitch_kb_extra
+        )
+        expected_output = (
+            "A structured research brief covering all relevant projects, technologies, "
+            "outcomes, and source document names."
+        )
+
+    return Task(
+        description=description,
+        expected_output=expected_output,
+        agent=researcher,
+        context=[],  # KB injected directly into description — no parent task needed
+    )
+
+
 # ── Pipeline entry point ──────────────────────────────────────────────────────
 
-def run_crew(query: str) -> dict:
-    """
-    Run the 3-agent pipeline and return {sections, sources}.
+def _run_crew_once(query: str, use_web_search: bool, tone: str) -> dict:
+    """Build and execute the pipeline with whichever key is currently active.
 
-    Raises:
-        RuntimeError — if ChromaDB is empty (surfaces to the caller as 503)
-    All other agent/LLM errors are caught by the caller and trigger fallback.
+    S3: KB searches run in parallel after planning, before the researcher runs (~4s saved).
     """
+    is_pitch = _is_pitch_request(query)
     llm_fast = _make_llm(temperature=0.3)
     llm_writer = _make_llm(temperature=0.45)
-    kb_tool = SearchKBTool()
 
+    # ── Query planning (always runs) ───────────────────────────────────────
     planner = _build_planner(llm_fast)
-    researcher = _build_researcher(llm_fast, kb_tool)
+    t_plan = _plan_task(query, planner)
+    plan_result = Crew(
+        agents=[planner], tasks=[t_plan],
+        process=Process.sequential, verbose=False, memory=False,
+    ).kickoff()
+    queries = _parse_queries(plan_result)
+
+    # ── S3: Parallel KB fetch ──────────────────────────────────────────────
+    # All queries are independent — run them simultaneously instead of sequentially.
+    # Token budget: pitch 5q × 6r × ~250tok ≈ 7.5k; non-pitch 3q × 10r × ~250tok ≈ 7.5k.
+    n_results = 6 if is_pitch else 10
+    kb_context, found_sources = _parallel_kb_fetch(
+        queries, n_results=n_results, max_per_file=3, text_limit=1000,
+    )
+
+    # ── Research + Write ───────────────────────────────────────────────────
+    # KB already fetched — researcher only needs SearchWebTool (if enabled).
+    web_tool = SearchWebTool() if use_web_search else None
+    tools = [web_tool] if web_tool else []
+
+    researcher = _build_researcher_with_context(llm_fast, tools)
     writer = _build_writer(llm_writer)
 
-    t_plan = _plan_task(query, planner)
-    t_research = _research_task(researcher, context=[t_plan])
-    t_write = _write_task(query, writer, context=[t_research])
+    t_research = _research_task_with_kb_context(
+        researcher, query, kb_context,
+        use_web_search=use_web_search, is_pitch=is_pitch,
+    )
+    t_write = _write_task(query, writer, context=[t_research], use_web_search=use_web_search, tone=tone)
 
-    crew = Crew(
-        agents=[planner, researcher, writer],
-        tasks=[t_plan, t_research, t_write],
+    result = Crew(
+        agents=[researcher, writer],
+        tasks=[t_research, t_write],
         process=Process.sequential,
         verbose=False,
         memory=False,
-    )
+    ).kickoff()
 
-    result = crew.kickoff()
-    return _parse_result(result, kb_tool.found_sources)
+    return _parse_result(result, found_sources, web_tool)
+
+
+def run_crew(query: str, use_web_search: bool = False, tone: str = "balanced") -> dict:
+    """
+    Run the 3-agent pipeline and return {sections, sources, web_sources}.
+    Rotates through available Groq API keys on rate-limit or quota errors.
+
+    Raises:
+        RuntimeError — if ChromaDB is empty (surfaces to the caller as 503)
+    All other errors after key exhaustion are re-raised to trigger fallback.
+    """
+    key_manager.reset()
+    while True:
+        try:
+            return _run_crew_once(query, use_web_search, tone)
+        except RuntimeError:
+            raise  # ChromaDB empty — do not rotate, surface as 503
+        except Exception as exc:
+            if is_rotatable_error(exc):
+                if key_manager.rotate():
+                    continue  # retry with next key
+                raise GroqQuotaExhaustedError(
+                    f"All {key_manager.pool_size} Groq API key(s) have hit their rate or quota limit. "
+                    "Please try again in a few minutes."
+                ) from exc
+            raise  # non-rotatable error
 
 
 # ── Output parsing ────────────────────────────────────────────────────────────
 
-def _parse_result(result, found_sources: list[str]) -> dict:
+def _parse_result(result, found_sources: list[str], web_tool=None) -> dict:
     """
-    Extract {sections, sources} from the crew result.
+    Extract {sections, sources, web_sources} from the crew result.
     Uses multiple fallback strategies so a malformed LLM response never crashes.
     """
     raw = result.raw if hasattr(result, "raw") and result.raw else str(result)
+    web_sources = web_tool.found_web_sources if web_tool else []
 
     parsed = _extract_json(raw)
     if parsed and "sections" in parsed:
         sections = parsed["sections"]
-        has_headings = any(s.get("heading") for s in sections)
 
-        # Prefer sources reported by the writer; fall back to KB tool tracking
-        writer_sources = parsed.get("sources") or []
-        sources = writer_sources if writer_sources else (found_sources if has_headings else [])
+        # Prefer sources reported by the writer; fall back to KB tool tracking.
+        # Always show sources — even heading=null answers come from the KB.
+        # Map writer source names → {name, file} using KB tool tracking so URLs work
+        # for any document, regardless of whether it's registered in doc_metadata.py.
+        writer_source_names = parsed.get("sources") or []
+        if writer_source_names:
+            found_map = {s["name"]: s for s in found_sources}
+            sources = [found_map.get(n, {"name": n, "file": None}) for n in writer_source_names]
+        else:
+            sources = found_sources
 
-        return {"sections": sections, "sources": sources}
+        return {"sections": sections, "sources": sources, "web_sources": web_sources}
 
     # Last resort — wrap the raw text as a plain conversational response
     return {
         "sections": [{"heading": None, "content": raw[:3000].strip()}],
         "sources": [],
+        "web_sources": web_sources,
     }
 
 
-def _extract_json(text: str) -> dict | None:
-    """Try three strategies to find valid JSON in LLM output."""
-    text = text.strip()
+def _fix_json_newlines(text: str) -> str:
+    """Escape unescaped control characters inside JSON string values.
 
-    # 1. The whole output is valid JSON
+    LLMs often write literal newlines/tabs in JSON string values (which is
+    invalid JSON). This walks the text character-by-character, tracking
+    whether we're inside a string, and escapes any raw control chars it finds.
+    """
+    result = []
+    in_string = False
+    i = 0
+    while i < len(text):
+        c = text[i]
+        if c == "\\" and in_string:
+            # Already-escaped sequence — copy both chars verbatim
+            result.append(c)
+            i += 1
+            if i < len(text):
+                result.append(text[i])
+        elif c == '"':
+            in_string = not in_string
+            result.append(c)
+        elif in_string and c == "\n":
+            result.append("\\n")
+        elif in_string and c == "\r":
+            result.append("\\r")
+        elif in_string and c == "\t":
+            result.append("\\t")
+        else:
+            result.append(c)
+        i += 1
+    return "".join(result)
+
+
+def _try_parse(candidate: str) -> dict | None:
+    """Try json.loads on the raw candidate, then on the newline-fixed version."""
     try:
-        return json.loads(text)
+        return json.loads(candidate)
     except json.JSONDecodeError:
         pass
+    try:
+        return json.loads(_fix_json_newlines(candidate))
+    except json.JSONDecodeError:
+        return None
 
-    # 2. JSON wrapped in markdown code fences (```json ... ```)
-    fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+
+def _extract_json(text: str) -> dict | None:
+    """Find and parse a JSON object containing a 'sections' key from LLM output.
+
+    Tries four strategies in order, each also attempting a newline-repair pass.
+    The most common failure mode: LLM writes literal newlines inside JSON string
+    values (markdown bullet points / paragraphs), making the JSON technically
+    invalid. _fix_json_newlines handles this without any extra dependency.
+    """
+    text = text.strip()
+
+    # 1. Whole output is valid JSON (or fixable JSON)
+    result = _try_parse(text)
+    if result is not None:
+        return result
+
+    # 2. JSON in markdown code fences
+    fence = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
     if fence:
-        try:
-            return json.loads(fence.group(1))
-        except json.JSONDecodeError:
-            pass
+        result = _try_parse(fence.group(1).strip())
+        if result is not None:
+            return result
 
-    # 3. Find the outermost {...} block — first { to matching }
+    # 3. Brace-match from "sections" key — immune to { } chars in preceding prose
+    idx = text.find('"sections"')
+    if idx != -1:
+        brace_start = text.rfind("{", 0, idx)
+        if brace_start != -1:
+            depth = 0
+            for i, ch in enumerate(text[brace_start:]):
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        result = _try_parse(text[brace_start : brace_start + i + 1])
+                        if result is not None:
+                            return result
+                        break  # matched brace found but still invalid — stop trying
+
+    # 4. Last resort: first { to last }
     start = text.find("{")
     end = text.rfind("}") + 1
     if start != -1 and end > start:
-        try:
-            return json.loads(text[start:end])
-        except json.JSONDecodeError:
-            pass
+        result = _try_parse(text[start:end])
+        if result is not None:
+            return result
 
     return None
