@@ -10,6 +10,11 @@ from rag.llm import generate
 
 _USE_CREW_AI = os.getenv("USE_CREW_AI", "true").lower() == "true"
 
+# In production set SUPABASE_DOCS_BASE_URL to the Supabase Storage public base URL:
+#   https://<project-ref>.supabase.co/storage/v1/object/public/docs
+# Unset in local dev → falls back to /api/docs/<file> served by DocView.
+_DOCS_BASE = (os.getenv("SUPABASE_DOCS_BASE_URL") or "").rstrip("/")
+
 
 def _build_sources(sources: list) -> list[dict]:
     """Convert KB sources to {name, url} objects for frontend linking.
@@ -27,10 +32,11 @@ def _build_sources(sources: list) -> list[dict]:
         else:
             name = src
             filename = get_filename_by_display_name(name)
-        result.append({
-            "name": name,
-            "url": f"/api/docs/{filename}" if filename else None,
-        })
+        if filename:
+            url = f"{_DOCS_BASE}/{filename}" if _DOCS_BASE else f"/api/docs/{filename}"
+        else:
+            url = None
+        result.append({"name": name, "url": url})
     return result
 
 
