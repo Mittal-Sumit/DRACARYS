@@ -13,8 +13,8 @@ class ProposalRequestSerializer(serializers.Serializer):
     use_web_search = serializers.BooleanField(default=False, required=False)
     conversation_id = serializers.IntegerField(required=False, allow_null=True, default=None)
     tone = serializers.ChoiceField(
-        choices=["technical", "balanced", "executive"],
-        default="balanced",
+        choices=["ask", "pitch", "pitch_executive", "pitch_technical", "proposal"],
+        default="pitch",
         required=False,
     )
     conversation_history = _HistoryItemSerializer(many=True, required=False, default=list)

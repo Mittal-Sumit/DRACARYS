@@ -19,12 +19,32 @@ const WELCOME_MSG = {
   text: "Hey! 👋 Ready to crush that pitch today? What are we working on?",
 };
 
-const PROMPT_CHIPS = [
-  "What FMCG projects have we delivered?",
-  "What Azure experience do we have?",
-  "Generate a pitch for a pharma supply chain client",
-  "Explain our data warehousing capabilities",
-];
+const PROMPT_CHIPS = {
+  ask: [
+    { label: "Sector experience", template: "What data & analytics projects have we delivered for pharma clients?" },
+    { label: "Technical depth", template: "What cloud platforms and data engineering tools does Ganit specialise in?" },
+    { label: "Case study", template: "Summarise our work with Cipla on BI and data engineering" },
+    { label: "Competitive edge", template: "What sets Ganit apart from a traditional system integrator?" },
+  ],
+  pitch: [
+    { label: "Pharma prospect", template: "Pitch for a pharma company looking to improve supply chain visibility and demand planning" },
+    { label: "FMCG meeting", template: "Pitch for an FMCG brand exploring demand forecasting and trade analytics" },
+    { label: "Platform modernisation", template: "Pitch for a manufacturing client evaluating Microsoft Fabric for analytics" },
+    { label: "Banking CXO", template: "Pitch for a banking executive exploring cloud data platform modernisation" },
+  ],
+  proposal: [
+    { label: "Data platform", template: "Draft a proposal for a retail company building a unified analytics platform on Azure" },
+    { label: "POC engagement", template: "Proposal for a 6-week predictive maintenance POC for a healthcare manufacturer" },
+    { label: "BI migration", template: "Proposal for migrating a pharma company's on-premise BI to a cloud-native stack" },
+    { label: "Data strategy", template: "Proposal for a data strategy and roadmap engagement for a mid-size FMCG company" },
+  ],
+};
+
+const getModeFromTone = (tone) => {
+  if (tone === "ask") return "ask";
+  if (tone === "proposal") return "proposal";
+  return "pitch";
+};
 
 const CONVERSATIONAL_RE = /^(hi+|hello|hey|howdy|yo|sup|good\s+morning|good\s+afternoon|good\s+evening|thanks|thank\s+you|ok+|okay|yes|no+|bye|great|cool|nice|test|ping|check)[\s!?.]*$/i;
 
@@ -72,12 +92,17 @@ const Home = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [webSearch, setWebSearch] = useState(false);
-  const [tone, setTone] = useState("balanced");
+  const [tone, setTone] = useState("pitch");
   const [conversations, setConversations] = useState([]);
   const [activeConversationId, setActiveConversationId] = useState(null);
 
   const chatEndRef = useRef(null);
   const prevUserRef = useRef(user);
+  const chatboxRef = useRef(null);
+
+  const handleChipSelect = useCallback((template) => {
+    chatboxRef.current?.fillInput(template);
+  }, []);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -279,13 +304,14 @@ const Home = () => {
 
           {messages.length === 1 && !loading && (
             <div className="prompt-chips">
-              {PROMPT_CHIPS.map((chip) => (
+              {(PROMPT_CHIPS[getModeFromTone(tone)] || PROMPT_CHIPS.pitch).map((chip) => (
                 <button
-                  key={chip}
+                  key={chip.label}
                   className="prompt-chip"
-                  onClick={() => handleSend(chip)}
+                  onClick={() => handleChipSelect(chip.template)}
                 >
-                  {chip}
+                  <span className="prompt-chip-label">{chip.label}</span>
+                  <span className="prompt-chip-text">{chip.template}</span>
                 </button>
               ))}
             </div>
@@ -297,6 +323,7 @@ const Home = () => {
         {/* Floating input dock */}
         <div className="input-dock">
           <ChatBox
+            ref={chatboxRef}
             onSend={handleSend}
             disabled={loading}
             webSearch={webSearch}

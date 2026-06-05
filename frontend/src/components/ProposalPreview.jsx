@@ -171,16 +171,18 @@ const ProposalPreview = ({ data }) => (
               {data.sources.map((src) => {
                 const name = typeof src === "string" ? src : src.name;
                 const url = typeof src === "string" ? null : src.url;
-                const similarityScore = typeof src === "string" ? null : src.similarity_score;
-                const scoreDisplay = similarityScore ? ` (${similarityScore.toFixed(0)}%)` : "";
+                const score = typeof src === "string" ? null : src.similarity_score;
+                const scoreClass = score >= 70 ? "score-high" : score >= 45 ? "score-mid" : "score-low";
+                const badge = score != null ? (
+                  <span className={`pill-score ${scoreClass}`}>{Math.round(score)}%</span>
+                ) : null;
                 return url ? (
-                  <a key={name} href={url} target="_blank" rel="noopener noreferrer" className="pill pill-kb" title={`Similarity score: ${similarityScore?.toFixed(1)}%`}>
-                    {name}{scoreDisplay}
-                    <ExternalLink size={10} />
+                  <a key={name} href={url} target="_blank" rel="noopener noreferrer" className="pill pill-kb">
+                    {name}{badge}<ExternalLink size={10} />
                   </a>
                 ) : (
-                  <span key={name} className="pill pill-kb" title={`Similarity score: ${similarityScore?.toFixed(1)}%`}>
-                    {name}{scoreDisplay}
+                  <span key={name} className="pill pill-kb">
+                    {name}{badge}
                   </span>
                 );
               })}
