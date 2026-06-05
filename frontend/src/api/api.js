@@ -93,7 +93,7 @@ export const forgotPassword = (email) =>
 export const resetPassword = (uid, token, newPassword) =>
   axios.post(`${API_BASE}/api/auth/reset-password/`, { uid, token, new_password: newPassword }).then((r) => r.data);
 
-export async function generateProposal(query, useWebSearch = false, conversationId = null, tone = "balanced") {
+export async function generateProposal(query, useWebSearch = false, conversationId = null, tone = "balanced", history = []) {
   return withRetry(() =>
     client
       .post("/generate-proposal/", {
@@ -101,6 +101,7 @@ export async function generateProposal(query, useWebSearch = false, conversation
         use_web_search: useWebSearch,
         conversation_id: conversationId,
         tone,
+        conversation_history: history,
       })
       .then((r) => r.data),
     2,

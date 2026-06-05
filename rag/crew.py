@@ -146,6 +146,23 @@ class SearchWebTool(BaseTool):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+def _format_history(history: list[dict]) -> str:
+    """Format conversation history as a short context block for the LLM.
+
+    Capped at the last 3 turns (6 messages) and 300 chars per message so it
+    stays well within Groq's 12k token budget.
+    """
+    if not history:
+        return ""
+    lines = ["Conversation so far (most recent last):"]
+    for msg in history[-6:]:
+        role = "User" if msg.get("role") == "user" else "Assistant"
+        text = (msg.get("text") or "").strip()[:300]
+        if text:
+            lines.append(f"  {role}: {text}")
+    return "\n".join(lines) + "\n\n" if len(lines) > 1 else ""
+
+
 def _is_pitch_request(query: str) -> bool:
     """Detect complex pitch/proposal requests that need full structured multi-section output."""
     q = query.lower()
@@ -227,7 +244,7 @@ def _build_writer(llm: LLM) -> Agent:
 
 # ── Tasks ─────────────────────────────────────────────────────────────────────
 
-def _plan_task(query: str, planner: Agent) -> Task:
+def _plan_task(query: str, planner: Agent, history: list[dict] = None) -> Task:
     pitch = _is_pitch_request(query)
     if pitch:
         strategy = (
@@ -247,7 +264,8 @@ def _plan_task(query: str, planner: Agent) -> Task:
 
     return Task(
         description=(
-            f'User request: "{query}"\n\n'
+            _format_history(history or [])
+            + f'User request: "{query}"\n\n'
             + strategy
             + "\nFor every query, consider:\n"
             "  1. Industry or domain (e.g. pharma, FMCG, banking, automotive, healthcare)\n"
@@ -360,7 +378,7 @@ _TONE_INSTRUCTIONS = {
 }
 
 
-def _write_task(query: str, writer: Agent, context: list[Task], use_web_search: bool = False, tone: str = "balanced") -> Task:
+def _write_task(query: str, writer: Agent, context: list[Task], use_web_search: bool = False, tone: str = "balanced", history: list[dict] = None) -> Task:
     is_pitch = _is_pitch_request(query)
     tone_instruction = _TONE_INSTRUCTIONS.get(tone, "")
 
@@ -445,8 +463,33 @@ def _write_task(query: str, writer: Agent, context: list[Task], use_web_search: 
         source_rules = ""
         sources_instruction = "  8. 'sources': list only source document names actually cited.\n"
 
+    if is_pitch:
+        win_strategy_rules = (
+            "  9. win_strategy (internal sales guide — never shown to the client):\n"
+            "     • pitch_strategy: 2–3 tactical sentences — which case study to open with and why, "
+            "the key angle to lead on based on the prospect's likely priorities, "
+            "and one thing to explicitly avoid saying in this meeting.\n"
+            "     • value_propositions: exactly 3 concise strings, each anchored to a named KB "
+            "proof point or metric and tailored to this prospect's specific challenge.\n"
+            "     • objections: exactly 3 pushbacks this prospect is likely to raise "
+            "(e.g. incumbent vendor, budget constraints, compliance concerns, team bandwidth). "
+            "Every response must cite KB evidence — no generic consulting language.\n"
+        )
+        win_strategy_schema = (
+            ', "win_strategy": {'
+            '"pitch_strategy": "string", '
+            '"value_propositions": ["string", "string", "string"], '
+            '"objections": [{"objection": "string", "response": "string"}, '
+            '{"objection": "string", "response": "string"}, '
+            '{"objection": "string", "response": "string"}]}'
+        )
+    else:
+        win_strategy_rules = ""
+        win_strategy_schema = ""
+
     description = (
-        f'User question: "{query}"\n\n'
+        _format_history(history or [])
+        + f'User question: "{query}"\n\n'
         + tone_instruction
         + "Using ONLY the research brief above, answer the user's question.\n\n"
         + section_rules
@@ -454,10 +497,13 @@ def _write_task(query: str, writer: Agent, context: list[Task], use_web_search: 
         + base_rules
         + sources_instruction
         + source_rules
+        + win_strategy_rules
         + "\nYOUR ENTIRE RESPONSE MUST BE A SINGLE JSON OBJECT. "
         "No preamble, no explanation, no text before or after. Start with { and end with }.\n"
         '{"sections": [{"heading": "Title or null", "content": "markdown content"}], '
-        '"sources": ["Source Name 1"]}'
+        '"sources": ["Source Name 1"]'
+        + win_strategy_schema
+        + "}"
     )
 
     return Task(
@@ -746,7 +792,7 @@ def _research_task_with_kb_context(
 
 # ── Pipeline entry point ──────────────────────────────────────────────────────
 
-def _run_crew_once(query: str, use_web_search: bool, tone: str) -> dict:
+def _run_crew_once(query: str, use_web_search: bool, tone: str, history: list[dict]) -> dict:
     """Build and execute the pipeline with whichever key is currently active.
 
     S3: KB searches run in parallel after planning, before the researcher runs (~4s saved).
@@ -757,7 +803,7 @@ def _run_crew_once(query: str, use_web_search: bool, tone: str) -> dict:
 
     # ── Query planning (always runs) ───────────────────────────────────────
     planner = _build_planner(llm_fast)
-    t_plan = _plan_task(query, planner)
+    t_plan = _plan_task(query, planner, history=history)
     plan_result = Crew(
         agents=[planner], tasks=[t_plan],
         process=Process.sequential, verbose=False, memory=False,
@@ -793,7 +839,7 @@ def _run_crew_once(query: str, use_web_search: bool, tone: str) -> dict:
         use_web_search=use_web_search, is_pitch=is_pitch,
         web_context=web_context,
     )
-    t_write = _write_task(query, writer, context=[t_research], use_web_search=use_web_search, tone=tone)
+    t_write = _write_task(query, writer, context=[t_research], use_web_search=use_web_search, tone=tone, history=history)
 
     result = Crew(
         agents=[researcher, writer],
@@ -806,7 +852,7 @@ def _run_crew_once(query: str, use_web_search: bool, tone: str) -> dict:
     return _parse_result(result, found_sources, pre_fetched_web_sources=pre_fetched_web_sources)
 
 
-def run_crew(query: str, use_web_search: bool = False, tone: str = "balanced") -> dict:
+def run_crew(query: str, use_web_search: bool = False, tone: str = "balanced", history: list[dict] = None) -> dict:
     """
     Run the 3-agent pipeline and return {sections, sources, web_sources}.
     Rotates through available Groq API keys on rate-limit or quota errors.
@@ -818,7 +864,7 @@ def run_crew(query: str, use_web_search: bool = False, tone: str = "balanced") -
     key_manager.reset()
     while True:
         try:
-            return _run_crew_once(query, use_web_search, tone)
+            return _run_crew_once(query, use_web_search, tone, history or [])
         except RuntimeError:
             raise  # ChromaDB empty — do not rotate, surface as 503
         except Exception as exc:
@@ -870,7 +916,8 @@ def _parse_result(
         else:
             sources = found_sources
 
-        return {"sections": sections, "sources": sources, "web_sources": web_sources}
+        win_strategy = parsed.get("win_strategy") or None
+        return {"sections": sections, "sources": sources, "web_sources": web_sources, "win_strategy": win_strategy}
 
     # Last resort — wrap the raw text as a plain conversational response
     return {

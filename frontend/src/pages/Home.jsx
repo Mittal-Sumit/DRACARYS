@@ -31,6 +31,25 @@ const CONVERSATIONAL_RE = /^(hi+|hello|hey|howdy|yo|sup|good\s+morning|good\s+af
 const isConversational = (query) =>
   CONVERSATIONAL_RE.test(query.trim()) || query.trim().length < 4;
 
+const buildHistory = (messages) =>
+  messages
+    .filter((m) => m.id !== "welcome" && (m.text || m.proposalData))
+    .slice(-6)
+    .map((m) => {
+      if (m.role === "user") return { role: "user", text: (m.text || "").slice(0, 300) };
+      if (m.proposalData?.sections) {
+        const headings = m.proposalData.sections
+          .filter((s) => s.heading)
+          .map((s) => s.heading)
+          .slice(0, 4)
+          .join(" | ");
+        const preview = (m.proposalData.sections[0]?.content || "").slice(0, 200);
+        return { role: "assistant", text: headings ? `[${headings}] ${preview}` : preview };
+      }
+      return { role: "assistant", text: (m.text || "").slice(0, 300) };
+    })
+    .filter((m) => m.text);
+
 const messageVariants = {
   hidden: { opacity: 0, y: 20 },
   visible: {
@@ -135,7 +154,8 @@ const Home = () => {
     setError(null);
 
     try {
-      const result = await generateProposal(query, webSearch, activeConversationId, tone);
+      const history = buildHistory(messages);
+      const result = await generateProposal(query, webSearch, activeConversationId, tone, history);
 
       const assistantMsg = {
         id: Date.now() + 1,

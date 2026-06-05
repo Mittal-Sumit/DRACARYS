@@ -3,6 +3,11 @@ from rest_framework import serializers
 from .models import ChatMessage, Conversation
 
 
+class _HistoryItemSerializer(serializers.Serializer):
+    role = serializers.ChoiceField(choices=["user", "assistant"])
+    text = serializers.CharField(max_length=600, allow_blank=True)
+
+
 class ProposalRequestSerializer(serializers.Serializer):
     query = serializers.CharField(min_length=2, max_length=1000)
     use_web_search = serializers.BooleanField(default=False, required=False)
@@ -12,6 +17,7 @@ class ProposalRequestSerializer(serializers.Serializer):
         default="balanced",
         required=False,
     )
+    conversation_history = _HistoryItemSerializer(many=True, required=False, default=list)
 
 
 class SectionSerializer(serializers.Serializer):
