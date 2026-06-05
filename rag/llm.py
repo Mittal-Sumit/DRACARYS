@@ -30,6 +30,10 @@ def generate(
     context_chunks: list[dict],
     model: str = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
     temperature: float = 0.5,
+    tone: str = "balanced",
+    use_web_search: bool = False,
+    output_format: str = "proposal",
+    conversation_context: str = "",
 ) -> dict:
     """
     Send query + retrieved chunks to Groq and return a structured proposal dict.
@@ -42,9 +46,12 @@ def generate(
             "why_us": "..."
         }
     """
-    from rag.prompts import SYSTEM_PROMPT, build_user_message
+    from rag.prompts import build_system_prompt, build_user_message
 
+    system_prompt = build_system_prompt(tone, use_web_search, output_format)
     user_message = build_user_message(query, context_chunks)
+    if conversation_context:
+        user_message = f"CONVERSATION HISTORY:\n{conversation_context}\n\n{user_message}"
 
     keys = get_groq_api_keys()
     if not keys:
@@ -59,7 +66,7 @@ def generate(
                 temperature=temperature,
                 response_format={"type": "json_object"},
                 messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_message},
                 ],
             )
@@ -74,10 +81,18 @@ def generate(
     content = response.choices[0].message.content
     try:
         parsed = json.loads(content)
+        if output_format == "email":
+            if "subject" in parsed or "body" in parsed:
+                return parsed
+            text = " ".join(str(v) for v in parsed.values() if v)
+            return {"subject": "Outreach Email", "body": text or content}
+
         if "sections" not in parsed:
             # LLM returned old 4-key format or unexpected shape — wrap it
             text = " ".join(str(v) for v in parsed.values() if v)
             return {"sections": [{"heading": None, "content": text or content}]}
         return parsed
     except json.JSONDecodeError:
+        if output_format == "email":
+            return {"subject": "Outreach Email", "body": content}
         return {"sections": [{"heading": None, "content": content}]}

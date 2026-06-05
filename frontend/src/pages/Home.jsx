@@ -7,6 +7,7 @@ import Loader from "../components/Loader";
 import ProposalPreview from "../components/ProposalPreview";
 import {
   generateProposal,
+  generateProposalStream,
   getConversations,
   getConversation,
   deleteConversation,
@@ -53,8 +54,14 @@ const Home = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [webSearch, setWebSearch] = useState(false);
+  const [tone, setTone] = useState("balanced");
+  const [personName, setPersonName] = useState("");
+  const [companyName, setCompanyName] = useState("");
+  const [format, setFormat] = useState("proposal");
+  const [loaderMsg, setLoaderMsg] = useState("");
   const [conversations, setConversations] = useState([]);
   const [activeConversationId, setActiveConversationId] = useState(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const chatEndRef = useRef(null);
   const prevUserRef = useRef(user);
@@ -91,6 +98,8 @@ const Home = () => {
     setMessages([WELCOME_MSG]);
     setActiveConversationId(null);
     setError(null);
+    setPersonName("");
+    setCompanyName("");
   }, []);
 
   const handleSelectConversation = useCallback(async (id) => {
@@ -132,45 +141,76 @@ const Home = () => {
 
     setLoading(true);
     setError(null);
+    setLoaderMsg("🔍 Analyzing query...");
 
     try {
-      const result = await generateProposal(query, webSearch, activeConversationId);
+      let finalResult = null;
+      let localError = null;
 
-      const assistantMsg = {
-        id: Date.now() + 1,
-        role: "assistant",
-        proposalData: result,
-      };
-      setMessages((prev) => [...prev, assistantMsg]);
+      await generateProposalStream(
+        query,
+        webSearch,
+        activeConversationId,
+        tone,
+        personName,
+        companyName,
+        format,
+        (progress) => {
+          if (progress.stage === "complete") {
+            finalResult = progress.data;
+          } else if (progress.stage === "error") {
+            localError = progress.message || "An error occurred during pipeline execution.";
+            setError(localError);
+          } else {
+            setLoaderMsg(progress.message || `${progress.stage}...`);
+          }
+        }
+      );
 
-      if (user && result.conversation_id) {
-        const newId = result.conversation_id;
-        setActiveConversationId(newId);
-        setConversations((prev) => {
-          if (prev.some((c) => c.id === newId)) return prev;
-          return [
-            { id: newId, title: result.conversation_title, created_at: new Date().toISOString() },
-            ...prev,
-          ];
-        });
+      if (localError) {
+        return;
+      }
+
+      if (finalResult) {
+        const assistantMsg = {
+          id: Date.now() + 1,
+          role: "assistant",
+          proposalData: finalResult,
+        };
+        setMessages((prev) => [...prev, assistantMsg]);
+
+        if (user && finalResult.conversation_id) {
+          const newId = finalResult.conversation_id;
+          setActiveConversationId(newId);
+          setConversations((prev) => {
+            if (prev.some((c) => c.id === newId)) return prev;
+            return [
+              { id: newId, title: finalResult.conversation_title, created_at: new Date().toISOString() },
+              ...prev,
+            ];
+          });
+        }
+      } else {
+        throw new Error("No response received from the pipeline.");
       }
     } catch (err) {
-      const msg =
-        err.response?.data?.error || "Failed to generate proposal. Please try again.";
+      const msg = err.message || "Failed to generate proposal. Please try again.";
       setError(msg);
     } finally {
       setLoading(false);
+      setLoaderMsg("");
     }
-  }, [webSearch, activeConversationId, user]);
+  }, [webSearch, activeConversationId, user, tone, personName, companyName, format]);
 
   return (
     <div className="layout">
       <Sidebar
         conversations={conversations}
         activeConversationId={activeConversationId}
-        onSelectConversation={handleSelectConversation}
-        onNewChat={handleNewChat}
+        onSelectConversation={(id) => { handleSelectConversation(id); setSidebarOpen(false); }}
+        onNewChat={() => { handleNewChat(); setSidebarOpen(false); }}
         onDeleteConversation={handleDeleteConversation}
+        className={sidebarOpen ? 'sidebar-open' : ''}
       />
       <main className="main">
         {/* Mobile header */}
@@ -185,8 +225,8 @@ const Home = () => {
             </div>
             <h1 className="mobile-title">Dracarys</h1>
           </div>
-          <button className="mobile-menu-btn">
-            <span className="material-symbols-outlined">menu</span>
+          <button className="mobile-menu-btn" onClick={() => setSidebarOpen((v) => !v)}>
+            <span className="material-symbols-outlined">{sidebarOpen ? 'close' : 'menu'}</span>
           </button>
         </header>
 
@@ -240,7 +280,7 @@ const Home = () => {
             )}
           </AnimatePresence>
 
-          {loading && <Loader />}
+          {loading && <Loader message={loaderMsg} />}
 
           {error && (
             <motion.div
@@ -280,6 +320,14 @@ const Home = () => {
             disabled={loading}
             webSearch={webSearch}
             onToggleWebSearch={setWebSearch}
+            tone={tone}
+            onToneChange={setTone}
+            personName={personName}
+            onPersonNameChange={setPersonName}
+            companyName={companyName}
+            onCompanyNameChange={setCompanyName}
+            format={format}
+            onFormatChange={setFormat}
           />
         </div>
       </main>

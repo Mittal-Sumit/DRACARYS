@@ -23,12 +23,13 @@ const Sidebar = ({
   onSelectConversation,
   onNewChat,
   onDeleteConversation,
+  className = '',
 }) => {
   const { user, logout, bootstrapping } = useAuth();
 
   return (
     <motion.aside
-      className="sidebar"
+      className={`sidebar ${className}`.trim()}
       variants={sidebarVariants}
       initial="hidden"
       animate="visible"

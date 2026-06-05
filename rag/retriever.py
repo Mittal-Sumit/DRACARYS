@@ -13,12 +13,29 @@ Why each step?
 - Cross-encoder: reads query + chunk together, far more accurate than bi-encoder
 """
 
+import re
+
 from ingestion.embeddings import get_model
 from ingestion.ingest import _get_collection, _CHROMA_DIR
 from sentence_transformers import CrossEncoder
 
 _reranker: CrossEncoder | None = None
 _RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+
+_bm25_cache: dict = {"count": -1, "bm25": None, "docs": None, "metas": None}
+
+
+def _get_bm25(collection):
+    """Build BM25 index once, cache until collection size changes."""
+    from rank_bm25 import BM25Okapi
+    count = collection.count()
+    if _bm25_cache["count"] == count:
+        return _bm25_cache["bm25"], _bm25_cache["docs"], _bm25_cache["metas"]
+    all_data = collection.get(include=["documents", "metadatas"])
+    tokenized = [doc.lower().split() for doc in all_data["documents"]]
+    bm25 = BM25Okapi(tokenized)
+    _bm25_cache.update({"count": count, "bm25": bm25, "docs": all_data["documents"], "metas": all_data["metadatas"]})
+    return bm25, all_data["documents"], all_data["metadatas"]
 
 
 def _get_reranker() -> CrossEncoder:
@@ -28,7 +45,50 @@ def _get_reranker() -> CrossEncoder:
     return _reranker
 
 
+_INDUSTRY_TERMS = {
+    "pharma", "pharmaceutical", "pharmaceuticals", "banking", "bank", "investment", "bfsi",
+    "insurance", "fintech", "payments", "retail", "fmcg", "beverage", "food",
+    "qsr", "manufacturing", "logistics",
+    "telecom", "sports", "furniture", "healthcare", "Food and Beverage", "Consumer Goods", "Financial Services", "Retail", "Manufacturing",
+    "Supply chain"
+}
+
+def _strip_industry_terms(query: str) -> str:
+    """Remove industry-specific terms to generalize the search for solution patterns."""
+    words = query.split()
+    cleaned = []
+    for w in words:
+        clean_w = re.sub(r'^\W+|\W+$', '', w).lower()
+        if clean_w not in _INDUSTRY_TERMS:
+            cleaned.append(w)
+    return " ".join(cleaned)
+
+
 def retrieve(
+    query: str,
+    n_results: int = 10,
+    max_per_file: int = 3,
+    persist_dir: str = _CHROMA_DIR,
+    enable_cross_domain: bool = True,
+) -> list[dict]:
+    """Hybrid search → fallback to cross-domain if weak results."""
+    results = _standard_retrieve(query, n_results, max_per_file, persist_dir)
+
+    # Weak match threshold: if highest score is below -1.0, or no results returned
+    if enable_cross_domain and (not results or all(c.get("score", -99.0) < -1.0 for c in results)):
+        broad_query = _strip_industry_terms(query)
+        if broad_query.strip() and broad_query != query:
+            print(f"[Retriever] Weak results for {query!r}. Broadening query to {broad_query!r}")
+            broad_results = _standard_retrieve(broad_query, n_results, max_per_file, persist_dir)
+            if broad_results:
+                for c in broad_results:
+                    c["cross_domain"] = True
+                return broad_results
+
+    return results
+
+
+def _standard_retrieve(
     query: str,
     n_results: int = 10,
     max_per_file: int = 3,
@@ -83,12 +143,7 @@ def retrieve(
     ]
 
     # ── 2. BM25 keyword search ─────────────────────────────────────────────
-    all_data = collection.get(include=["documents", "metadatas"])
-    all_docs = all_data["documents"]
-    all_metas = all_data["metadatas"]
-
-    from rank_bm25 import BM25Okapi
-    bm25 = BM25Okapi([doc.lower().split() for doc in all_docs])
+    bm25, all_docs, all_metas = _get_bm25(collection)
     bm25_scores = bm25.get_scores(query.lower().split())
 
     top_bm25_idx = sorted(range(len(bm25_scores)), key=lambda i: bm25_scores[i], reverse=True)[:fetch_n]

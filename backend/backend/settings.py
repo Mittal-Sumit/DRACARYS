@@ -140,3 +140,6 @@ SIMPLE_JWT = {
     "ROTATE_REFRESH_TOKENS": False,
     "AUTH_HEADER_TYPES": ("Bearer",),
 }
+
+# Default primary key field type
+DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
