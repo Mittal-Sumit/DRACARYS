@@ -513,8 +513,10 @@ def _parallel_kb_fetch(
 
     Replaces the sequential tool-call loop inside the researcher agent.
     All queries are independent so they can all start at the same time.
+
+    Returns found_sources filtered to top 3 by average similarity score.
     """
-    found_sources: list[dict] = []
+    source_scores: dict[str, list[float]] = {}  # {display_name: [scores]}
     seen_names: set[str] = set()
     results_by_query: dict[str, list[dict]] = {}
 
@@ -534,9 +536,41 @@ def _parallel_kb_fetch(
             results_by_query[q] = chunks
             for chunk in chunks:
                 display = chunk.get("display_name") or chunk["file"]
-                if display not in seen_names:
-                    found_sources.append({"name": display, "file": chunk["file"]})
-                    seen_names.add(display)
+                score = chunk.get("score", 0.0)
+                if display not in source_scores:
+                    source_scores[display] = []
+                source_scores[display].append(score)
+                seen_names.add(display)
+
+    # Calculate average similarity score per source and sort by relevance
+    def _normalize_score(raw_score: float) -> float:
+        """Normalize cross-encoder score (-10 to 10) to 0-100 scale."""
+        return max(0, min(100, ((raw_score + 10) / 20) * 100))
+
+    source_with_scores = [
+        {
+            "name": display,
+            "file": None,  # Will be filled from chunks
+            "similarity_score": _normalize_score(sum(scores) / len(scores))
+        }
+        for display, scores in source_scores.items()
+    ]
+
+    # Sort by similarity score (descending) and keep top 3
+    source_with_scores.sort(key=lambda x: x["similarity_score"], reverse=True)
+    top_sources = source_with_scores[:3]
+
+    # Fill in file paths for top sources by looking back at chunks
+    top_source_names = {s["name"] for s in top_sources}
+    for chunk_list in results_by_query.values():
+        for chunk in chunk_list:
+            display = chunk.get("display_name") or chunk["file"]
+            if display in top_source_names:
+                for src in top_sources:
+                    if src["name"] == display and src["file"] is None:
+                        src["file"] = chunk["file"]
+
+    found_sources = top_sources
 
     # Format into a structured text block for the researcher
     lines = ["=== PRE-FETCHED KNOWLEDGE BASE RESULTS ===\n"]
@@ -556,18 +590,61 @@ def _parallel_kb_fetch(
     return "\n".join(lines), found_sources
 
 
-# ── Researcher variant: pre-fetched KB ────────────────────────────────────────
+# ── Web pre-fetch (parallel with KB) ─────────────────────────────────────────
 
-def _build_researcher_with_context(llm: LLM, tools: list) -> Agent:
-    """Researcher agent when KB results are pre-fetched and injected as text.
-    Has no KB tool — only SearchWebTool if web search is enabled.
+def _fetch_web_results(queries: list[str]) -> tuple[str, list[dict]]:
+    """Run Tavily searches directly — no LLM tool call involved.
+
+    Runs in the same ThreadPoolExecutor as _parallel_kb_fetch so neither
+    adds latency to the other. Pre-fetching eliminates the live SearchWebTool
+    call in the researcher, which caused the LLM to emit tool invocations as
+    literal text instead of actual function calls (tool_use_failed error).
     """
-    has_web = any(isinstance(t, SearchWebTool) for t in tools)
+    if not _TAVILY_API_KEY:
+        return "Web search unavailable — TAVILY_API_KEY not configured.", []
+
+    try:
+        from tavily import TavilyClient
+        client = TavilyClient(api_key=_TAVILY_API_KEY)
+    except Exception as exc:
+        return f"Web search unavailable — Tavily init failed: {exc}", []
+
+    found_web_sources: list[dict] = []
+    lines = ["=== PRE-FETCHED WEB RESULTS ===\n"]
+    seen_urls: set[str] = set()
+
+    for q in queries[:2]:  # first 2 queries are most relevant; cap to avoid token bloat
+        try:
+            results = client.search(q, max_results=5, search_depth="basic")
+            lines.append(f"--- Web search: {q} ---")
+            for r in results.get("results", []):
+                title = r.get("title", "")
+                url = r.get("url", "")
+                content = r.get("content", "")
+                if url and url not in seen_urls:
+                    seen_urls.add(url)
+                    found_web_sources.append({"name": title, "url": url})
+                lines.append(f"[{title}]({url})")
+                lines.append(content[:500].strip())
+                lines.append("")
+        except Exception as exc:
+            lines.append(f"Web search failed for '{q}': {exc}\n")
+
+    return "\n".join(lines), found_web_sources
+
+
+# ── Researcher variant: pre-fetched KB + web ──────────────────────────────────
+
+def _build_researcher_with_context(llm: LLM, use_web_search: bool = False) -> Agent:
+    """Researcher agent when all context (KB + web) is pre-fetched and injected as text.
+    No live tools — eliminates tool_use_failed errors caused by LLMs emitting
+    tool invocations as literal text when given large pre-injected context blocks.
+    """
     goal = (
-        "Analyse the provided knowledge base results and any web search findings. "
+        "Analyse the provided knowledge base results and pre-fetched web research. "
         "Synthesise into two strictly separated briefs: one for internal KB facts, "
         "one for web/market context. Never mix content between sections."
-        if has_web else
+        if use_web_search else
         "Analyse the provided knowledge base results and synthesise them into "
         "an exhaustive, fact-rich research brief."
     )
@@ -579,7 +656,7 @@ def _build_researcher_with_context(llm: LLM, tools: list) -> Agent:
             "and extract specific facts: client names, cloud platforms, technologies, delivery timelines, "
             "and measurable outcomes. You never invent facts — you only report what the sources say."
         ),
-        tools=tools,
+        tools=[],  # all context injected as text — no live tool calls needed
         llm=llm,
         allow_delegation=False,
         verbose=False,
@@ -592,8 +669,14 @@ def _research_task_with_kb_context(
     kb_context: str,
     use_web_search: bool = False,
     is_pitch: bool = False,
+    web_context: str = "",
 ) -> Task:
-    """Research task with KB results already injected — no KB tool calls needed."""
+    """Research task with all context (KB + web) pre-injected — zero live tool calls.
+
+    Web results are injected alongside KB results so the researcher never needs
+    to call search_web as a live tool. This eliminates the tool_use_failed error
+    caused by the LLM emitting <function=search_web(...)> as literal text.
+    """
     pitch_kb_extra = (
         "\n\nThis is a pitch/proposal request — extract with maximum depth. "
         "For EACH case study found:\n"
@@ -610,8 +693,9 @@ def _research_task_with_kb_context(
             f'User query: "{query}"\n\n'
             "The knowledge base has already been searched. Results are below:\n\n"
             + kb_context
-            + "\n\nNow use search_web to gather external market context for this query.\n\n"
-            "Output your brief in exactly these two labelled sections — no exceptions:\n\n"
+            + "\n\nWeb search results have also been pre-fetched. Results are below:\n\n"
+            + (web_context or "No web results were retrieved.")
+            + "\n\nSynthesise both into exactly these two labelled sections — do not call any tools:\n\n"
             "=== INTERNAL KB BRIEF ===\n"
             "Synthesise the PRE-FETCHED KNOWLEDGE BASE RESULTS above. Cover:\n"
             "  • Each relevant project — client name, industry, what was built, outcomes, metrics\n"
@@ -620,7 +704,7 @@ def _research_task_with_kb_context(
             "If no KB results found, write: No relevant internal projects found.\n"
             + pitch_kb_extra + "\n\n"
             "=== WEB RESEARCH BRIEF ===\n"
-            "Context from search_web ONLY. Cover:\n"
+            "Synthesise the PRE-FETCHED WEB RESULTS above. Cover:\n"
             "  • Market size, industry trends, benchmarks\n"
             "  • Client company background if relevant\n"
             "  • Technology adoption data or analyst reports\n"
@@ -680,25 +764,34 @@ def _run_crew_once(query: str, use_web_search: bool, tone: str) -> dict:
     ).kickoff()
     queries = _parse_queries(plan_result)
 
-    # ── S3: Parallel KB fetch ──────────────────────────────────────────────
-    # All queries are independent — run them simultaneously instead of sequentially.
-    # Token budget: pitch 5q × 6r × ~250tok ≈ 7.5k; non-pitch 3q × 10r × ~250tok ≈ 7.5k.
+    # ── S3: Parallel KB + web fetch ───────────────────────────────────────
+    # KB searches and (when enabled) web search run simultaneously.
+    # Pre-fetching web results eliminates the live SearchWebTool call that was
+    # causing the LLM to emit <function=search_web(...)> as literal text.
     n_results = 6 if is_pitch else 10
-    kb_context, found_sources = _parallel_kb_fetch(
-        queries, n_results=n_results, max_per_file=3, text_limit=1000,
-    )
+    if use_web_search:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            kb_future = executor.submit(
+                _parallel_kb_fetch, queries, n_results, 3, 1000
+            )
+            web_future = executor.submit(_fetch_web_results, queries)
+            kb_context, found_sources = kb_future.result()
+            web_context, pre_fetched_web_sources = web_future.result()
+    else:
+        kb_context, found_sources = _parallel_kb_fetch(
+            queries, n_results=n_results, max_per_file=3, text_limit=1000,
+        )
+        web_context, pre_fetched_web_sources = "", []
 
     # ── Research + Write ───────────────────────────────────────────────────
-    # KB already fetched — researcher only needs SearchWebTool (if enabled).
-    web_tool = SearchWebTool() if use_web_search else None
-    tools = [web_tool] if web_tool else []
-
-    researcher = _build_researcher_with_context(llm_fast, tools)
+    # All context pre-injected — researcher has no live tools to call.
+    researcher = _build_researcher_with_context(llm_fast, use_web_search=use_web_search)
     writer = _build_writer(llm_writer)
 
     t_research = _research_task_with_kb_context(
         researcher, query, kb_context,
         use_web_search=use_web_search, is_pitch=is_pitch,
+        web_context=web_context,
     )
     t_write = _write_task(query, writer, context=[t_research], use_web_search=use_web_search, tone=tone)
 
@@ -710,7 +803,7 @@ def _run_crew_once(query: str, use_web_search: bool, tone: str) -> dict:
         memory=False,
     ).kickoff()
 
-    return _parse_result(result, found_sources, web_tool)
+    return _parse_result(result, found_sources, pre_fetched_web_sources=pre_fetched_web_sources)
 
 
 def run_crew(query: str, use_web_search: bool = False, tone: str = "balanced") -> dict:
@@ -741,13 +834,23 @@ def run_crew(query: str, use_web_search: bool = False, tone: str = "balanced") -
 
 # ── Output parsing ────────────────────────────────────────────────────────────
 
-def _parse_result(result, found_sources: list[str], web_tool=None) -> dict:
+def _parse_result(
+    result,
+    found_sources: list[dict],
+    pre_fetched_web_sources: list | None = None,
+    web_tool=None,
+) -> dict:
     """
     Extract {sections, sources, web_sources} from the crew result.
     Uses multiple fallback strategies so a malformed LLM response never crashes.
+    Preserves similarity_score from found_sources in the output.
     """
     raw = result.raw if hasattr(result, "raw") and result.raw else str(result)
-    web_sources = web_tool.found_web_sources if web_tool else []
+    # pre_fetched_web_sources takes priority; web_tool kept for backwards compat
+    web_sources = (
+        pre_fetched_web_sources if pre_fetched_web_sources is not None
+        else (web_tool.found_web_sources if web_tool else [])
+    )
 
     parsed = _extract_json(raw)
     if parsed and "sections" in parsed:
@@ -755,12 +858,15 @@ def _parse_result(result, found_sources: list[str], web_tool=None) -> dict:
 
         # Prefer sources reported by the writer; fall back to KB tool tracking.
         # Always show sources — even heading=null answers come from the KB.
-        # Map writer source names → {name, file} using KB tool tracking so URLs work
-        # for any document, regardless of whether it's registered in doc_metadata.py.
+        # Map writer source names → {name, file, similarity_score} using KB tool tracking
+        # so URLs work for any document and similarity scores are preserved.
         writer_source_names = parsed.get("sources") or []
         if writer_source_names:
             found_map = {s["name"]: s for s in found_sources}
-            sources = [found_map.get(n, {"name": n, "file": None}) for n in writer_source_names]
+            sources = [
+                found_map.get(n, {"name": n, "file": None})
+                for n in writer_source_names
+            ]
         else:
             sources = found_sources
 
