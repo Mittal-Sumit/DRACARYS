@@ -146,6 +146,23 @@ class SearchWebTool(BaseTool):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+def _format_history(history: list[dict]) -> str:
+    """Format conversation history as a short context block for the LLM.
+
+    Capped at the last 3 turns (6 messages) and 300 chars per message so it
+    stays well within Groq's 12k token budget.
+    """
+    if not history:
+        return ""
+    lines = ["Conversation so far (most recent last):"]
+    for msg in history[-6:]:
+        role = "User" if msg.get("role") == "user" else "Assistant"
+        text = (msg.get("text") or "").strip()[:300]
+        if text:
+            lines.append(f"  {role}: {text}")
+    return "\n".join(lines) + "\n\n" if len(lines) > 1 else ""
+
+
 def _is_pitch_request(query: str) -> bool:
     """Detect complex pitch/proposal requests that need full structured multi-section output."""
     q = query.lower()
@@ -227,7 +244,7 @@ def _build_writer(llm: LLM) -> Agent:
 
 # ── Tasks ─────────────────────────────────────────────────────────────────────
 
-def _plan_task(query: str, planner: Agent) -> Task:
+def _plan_task(query: str, planner: Agent, history: list[dict] = None) -> Task:
     pitch = _is_pitch_request(query)
     if pitch:
         strategy = (
@@ -247,7 +264,8 @@ def _plan_task(query: str, planner: Agent) -> Task:
 
     return Task(
         description=(
-            f'User request: "{query}"\n\n'
+            _format_history(history or [])
+            + f'User request: "{query}"\n\n'
             + strategy
             + "\nFor every query, consider:\n"
             "  1. Industry or domain (e.g. pharma, FMCG, banking, automotive, healthcare)\n"
@@ -334,103 +352,178 @@ def _research_task(
     )
 
 
-_TONE_INSTRUCTIONS = {
-    "technical": (
-        "AUDIENCE & TONE — Technical:\n"
-        "Write for solutions architects, data engineers, and CTOs. "
-        "Use precise technical terminology: name specific services (e.g. Azure Data Factory, ADLS Gen2, Databricks, Purview), "
-        "data patterns (medallion architecture, CDC, ELT/ETL, streaming), and implementation details. "
-        "Include architecture rationale, data flow specifics, and technology trade-offs. "
-        "Lead with the how — pipeline design, integration approach, technology choices. "
-        "Business outcomes should anchor each section, but technical depth is the priority.\n\n"
+# ── Mode framing — sets the writer's persona and context ──────────────────────
+# Each mode gets a completely different framing, not just vocabulary tweaks.
+# This is what forces the LLM to produce genuinely different output per mode.
+
+_MODE_FRAMING = {
+    "ask": (
+        "RESPONSE MODE: Direct Answer\n"
+        "You are a senior consultant answering a colleague's question from memory. "
+        "Be direct, specific, and complete — like someone who actually worked on these projects.\n"
+        "A sales person reading this should immediately know: which clients, which technologies, which outcomes.\n\n"
     ),
-    "executive": (
-        "AUDIENCE & TONE — Executive:\n"
-        "Write for CEOs, CFOs, and CDOs who make investment decisions. "
-        "Every sentence must answer 'so what?' from a business perspective. "
-        "Translate all technical elements into plain business language — "
-        "'automated data pipelines' not 'Azure Data Factory', "
-        "'a structured data quality framework' not 'medallion architecture'. "
-        "Quantify everything in business terms: time saved, cost reduced, risk eliminated, decisions accelerated. "
-        "Avoid all acronyms — if one is unavoidable, define it immediately in plain language. "
-        "Never describe what a technology is — only say what it delivers for the business. "
-        "Write like a trusted advisor, not a vendor pitching features.\n\n"
+    "pitch": (
+        "RESPONSE MODE: Sales Meeting Prep\n"
+        "You are preparing a sales consultant for a client meeting happening soon. "
+        "Make every line count. Lead each section with the strongest claim, back it immediately with named evidence. "
+        "The sales person should be able to speak confidently from each section for 2–3 minutes.\n\n"
     ),
-    "balanced": "",
+    "pitch_executive": (
+        "RESPONSE MODE: Executive Briefing\n"
+        "Your audience is CEO/CFO/CDO level. They decide in the first 2 minutes whether to keep listening. "
+        "Lead with business impact, not solution. Every technical element must become business language: "
+        "revenue, cost, risk, time. No acronyms. No architecture. No 'data pipelines' — "
+        "say 'decisions in real time' or 'reports that took 3 days now take minutes'. "
+        "Write like a trusted advisor, not a vendor.\n\n"
+    ),
+    "pitch_technical": (
+        "RESPONSE MODE: Technical Deep-Dive\n"
+        "Your audience is CTOs, data engineers, and architects who will probe technical depth. "
+        "Lead with HOW — pipeline design, integration patterns, specific services, architecture trade-offs. "
+        "Name every technology. Include data flows and rationale for key decisions. "
+        "Business outcomes anchor each section, but technical depth is the priority. "
+        "Vague architecture statements ('a scalable cloud platform') are not acceptable.\n\n"
+    ),
+    "proposal": (
+        "RESPONSE MODE: Formal Written Proposal\n"
+        "This document will be sent to the client. They will read it without you present — "
+        "it must stand completely alone. Every claim justified, every recommendation explained. "
+        "Professional document language. Each section must be fully developed. "
+        "A one-paragraph section in a formal proposal is inadequate. "
+        "The reader should feel confident in our capability after reading each section.\n\n"
+    ),
 }
 
+# ── Section templates per mode ────────────────────────────────────────────────
 
-def _write_task(query: str, writer: Agent, context: list[Task], use_web_search: bool = False, tone: str = "balanced") -> Task:
+_ASK_SECTION_RULES = (
+    "Structure:\n"
+    "  • Single direct question → 1 section, heading=null, answer it completely.\n"
+    "  • Multi-part or complex question → 2–5 sections with short, descriptive headings.\n"
+    "  Calibrate to the question — only add a section when the content genuinely warrants it. "
+    "Never create structure just to appear thorough. A clear focused answer beats unnecessary sections.\n\n"
+)
+
+_PITCH_GENERAL_SECTION_RULES = (
+    "Structure with EXACTLY these 6 sections in this order:\n"
+    "  1. Problem Understanding — their world, their pain, their constraints. "
+    "Show deep understanding of their industry. Make them feel understood before you sell anything.\n"
+    "  2. Recommended Approach — what we would build and why, specific to this client. "
+    "Not a generic methodology — a concrete approach for their exact situation.\n"
+    "  3. Relevant Experience — 2–3 named client case studies. For each: the challenge, "
+    "what we built, and the specific measurable outcome. Connect each explicitly to the prospect's challenge.\n"
+    "  4. Expected Business Outcomes — what changes for the client when this is live. "
+    "Business terms: time saved, cost reduced, decisions improved, compliance met. "
+    "Separate proven outcomes (from KB) from projections (hedged language).\n"
+    "  5. Why Ganit — our specific differentiators for this engagement, backed by KB evidence. "
+    "No generic 'trusted partner' language. Concrete claims only.\n"
+    "  6. Key Discussion Points — 5 specific things to raise in the meeting that advance the deal. "
+    "Not generic conversation topics — specific to this prospect and their situation.\n\n"
+    "Each section must be substantive. Develop each point fully.\n\n"
+)
+
+_PITCH_EXECUTIVE_SECTION_RULES = (
+    "Structure with EXACTLY these 7 sections in this order:\n"
+    "  1. Business Context — their industry pressures, competitive landscape, and why this matters now. "
+    "No technical content. Show you understand their world.\n"
+    "  2. The Cost of Inaction — what staying as-is costs them. "
+    "Quantify: operational risk, missed decisions, compliance exposure, manual effort, speed disadvantage.\n"
+    "  3. Expected Business Outcomes — measurable results in business language only. "
+    "Revenue, cost, risk, time. Zero technical terminology.\n"
+    "  4. Relevant Experience — 2–3 named proof points. For each: one sentence on what the business problem was, "
+    "one sentence on the measurable business result. No technical detail.\n"
+    "  5. Why Ganit — our differentiators stated as business value. "
+    "What we deliver that others don't, with KB evidence. Write like a trusted advisor.\n"
+    "  6. Key Discussion Points — 4–5 strategic conversation starters that demonstrate "
+    "you understand their business priorities and open meaningful dialogue.\n"
+    "  7. Discovery Questions — 4–5 open-ended questions to uncover deeper priorities, "
+    "constraints, and what a successful outcome looks like for them.\n\n"
+    "Each section must be fully developed. No technical terminology anywhere.\n\n"
+)
+
+_PITCH_TECHNICAL_SECTION_RULES = (
+    "Structure with EXACTLY these 6 sections in this order:\n"
+    "  1. Technical Context — their current landscape: source systems, data volumes, "
+    "existing tools, integration points, known technical debt. Be specific.\n"
+    "  2. Architecture Overview — high-level design with components, data flow, and integration points. "
+    "Include specific cloud services and patterns.\n"
+    "  3. Technical Approach — exactly how we'd build it: specific services chosen and why, "
+    "integration methods, data patterns (medallion, CDC, streaming vs batch), trade-offs considered.\n"
+    "  4. Relevant Technical Experience — what we built for comparable clients, every technology used, "
+    "performance and scale outcomes. Name every service from the KB brief.\n"
+    "  5. Implementation Approach — delivery phases, key dependencies, technical risks, "
+    "what we need from their team, and how we'd de-risk the critical path.\n"
+    "  6. Technical Discussion Points — specific architecture decisions that need alignment in the meeting. "
+    "Concrete questions about their environment and constraints.\n\n"
+    "Every section must have technical depth — name specific services, patterns, and trade-offs.\n\n"
+)
+
+_PROPOSAL_SECTION_RULES = (
+    "Structure with EXACTLY these 9 sections in this order:\n"
+    "  1. Executive Summary — a self-contained overview: their challenge, our solution, "
+    "expected outcomes, and why Ganit. A decision-maker should read only this and understand the full proposal.\n"
+    "  2. Business Challenge — the client's problem in full context: operational, competitive, "
+    "regulatory, and strategic dimensions. Show thorough understanding.\n"
+    "  3. Relevant Experience — 2–3 named engagements with: challenge, what we built, measured outcome. "
+    "Make the parallel to this engagement explicit for each.\n"
+    "  4. Solution Approach — what we propose to build and why. Justify every major decision "
+    "with reference to the client's specific challenge.\n"
+    "  5. Technical Architecture — the design: components, data flows, integrations, "
+    "technology choices with rationale. Enough detail to build confidence.\n"
+    "  6. Delivery Plan — phases, milestones, timelines, team structure, client dependencies. "
+    "As specific as KB evidence allows; hedge where it doesn't.\n"
+    "  7. Risks & Mitigation — what could go wrong and how we'd address it. "
+    "Be honest — this shows maturity and builds trust.\n"
+    "  8. Benefits & Expected Outcomes — quantified results grounded in KB evidence. "
+    "Clearly separate proven outcomes (from past engagements) from forward projections (hedged).\n"
+    "  9. Next Steps — specific actions to move toward contract: what we need from them, "
+    "what we'll produce, and a suggested timeline to decision.\n\n"
+    "Every section must be fully developed. This is a sendable document — each section "
+    "must stand on its own without verbal context.\n\n"
+)
+
+
+def _write_task(query: str, writer: Agent, context: list[Task], use_web_search: bool = False, tone: str = "pitch", history: list[dict] = None) -> Task:
     is_pitch = _is_pitch_request(query)
-    tone_instruction = _TONE_INSTRUCTIONS.get(tone, "")
+    mode_framing = _MODE_FRAMING.get(tone, _MODE_FRAMING["pitch"])
 
     base_rules = (
         "  1. NUMBER CITATION RULE (non-negotiable): Before writing any number, percentage, timeframe, or metric, "
-        "ask yourself: 'Does this exact figure appear in the research brief?' "
-        "If YES — use it and attribute it to the source. "
-        "If NO — do not state it as fact. Replace with hedged language: "
+        "verify: does this exact figure appear in the research brief? "
+        "YES → use it and attribute it. NO → hedged language only: "
         "'potential benefits may include...', 'clients in similar engagements have seen...', "
-        "or 'expected to reduce...' Never present an inferred, estimated, or rounded figure as a confirmed outcome.\n"
+        "'expected to reduce...'. Never state an inferred or estimated figure as a confirmed outcome.\n"
         "  2. Never invent clients, projects, or technologies not in the brief.\n"
-        "  3. No filler: avoid 'leveraging', 'strategic', 'well-positioned', 'robust', 'seamlessly', 'end-to-end'.\n"
-        "  4. Be specific — cite exact client names, platforms, and metrics from the brief. "
-        "Generic statements like 'we have pharma experience' without a named client are not acceptable.\n"
-        "  5. For pitches: connect each case study outcome directly to the prospect's stated challenge. "
-        "Don't just describe what you did — explain why it applies to this specific client.\n"
-        "  6. Depth matters — develop each point fully. Don't truncate or summarise where the brief has detail.\n"
-        "  7. Use markdown in `content` to aid readability: **bold** for client names, technology names, and key metrics; "
-        "bullet lists (- item) for enumerable items; numbered lists (1. item) for steps or sequences; "
-        "blank line between paragraphs; > blockquote for a key highlight or standout fact. "
-        "Do NOT use backtick code formatting (`...`) for product names, technology names, or project names — "
-        "only use backticks for actual code: SQL snippets, CLI commands, or config values. "
-        "Format purposefully — only where it genuinely helps the reader.\n"
+        "  3. STRUCTURE for readability: **bold** for client names, technology names, and key metrics. "
+        "Bullet lists (- item) for multiple items. Numbered lists for steps or sequences. "
+        "Tables for comparisons. > blockquote for a standout fact or key highlight. "
+        "Blank line between paragraphs. Only use structure where it genuinely helps — never for decoration.\n"
+        "  4. DEPTH: Cover every relevant point in the research brief. Never truncate or skip relevant detail. "
+        "Calibrate length to the complexity of the question — the LLM decides how long each section needs to be, "
+        "not a word count. A short question gets a focused answer. A complex pitch gets full coverage.\n"
+        "  5. SALES VALUE: Every section must give the sales person something specific to say — "
+        "a named client, a concrete number, a differentiator backed by evidence. "
+        "Generic statements without named proof are not acceptable.\n"
+        "  6. RELEVANCE: Answer what was asked. If the question is specific, be specific. "
+        "Don't pad with adjacent topics the user didn't ask about.\n"
+        "  7. No filler words: 'leveraging', 'strategic', 'robust', 'seamlessly', 'end-to-end', "
+        "'cutting-edge', 'best-in-class'. Specific language only.\n"
+        "  8. Do NOT use backtick code formatting for product or technology names — "
+        "only for actual code (SQL, CLI commands, config values).\n"
     )
 
-    if is_pitch and tone == "executive":
-        section_rules = (
-            "Structure your response with EXACTLY these 7 sections in this exact order. "
-            "Use these headings verbatim:\n"
-            "  1. Business Challenges — Frame the client's pain points as business problems. "
-            "Show you understand their world: operational risk, compliance exposure, missed decisions. "
-            "No technical terminology.\n"
-            "  2. Business Impact — Quantify the cost of inaction. What is the business paying today "
-            "for siloed systems, manual processes, and poor visibility? Make the status quo feel expensive.\n"
-            "  3. Expected Outcomes — Concrete, measurable business results the client can expect: "
-            "time saved, cost reduced, compliance risk eliminated, decisions accelerated. "
-            "Outcomes only — never restate a challenge as an outcome.\n"
-            "  4. Relevant Experience — 2–3 named client proof points from the KB brief. "
-            "For each: state the business problem, what we delivered, and the measurable result. "
-            "Connect each explicitly to one of the client's stated challenges.\n"
-            "  5. Why Ganit — Our differentiators and why we are the right partner for this engagement. "
-            "Draw from the Ganit Corporate Profile in the brief. Specific claims only — no generic consulting language.\n"
-            "  6. Key Discussion Points — 4–5 strategic conversation starters for the meeting "
-            "that demonstrate understanding of their business and open meaningful dialogue.\n"
-            "  7. Discovery Questions — 4–6 open-ended questions to ask the client to uncover "
-            "deeper priorities, constraints, and decision criteria.\n\n"
-            "Each section must have its heading exactly as listed above. "
-            "Develop each section fully — no one-paragraph sections.\n\n"
-        )
-    elif is_pitch:
-        section_rules = (
-            "Structure your response:\n"
-            "  • This is a pitch/proposal request.\n"
-            "  • If the user explicitly listed sections (e.g. 'solution approach, architecture, governance, "
-            "roadmap, outcomes, experience'), generate EVERY one as its own section in the exact order listed. "
-            "Never merge, skip, or rename an explicitly requested section.\n"
-            "  • If no explicit sections were listed, use these in order: Problem Understanding, "
-            "Solution Approach, High-Level Architecture, Data Governance & Compliance, "
-            "Implementation Roadmap, Expected Business Outcomes, Relevant Experience.\n"
-            "  • Each section must be fully developed — minimum 3 substantive paragraphs or equivalent "
-            "structured bullet groups. A one-paragraph section for a pitch is not acceptable.\n\n"
-        )
+    # Section structure — completely different per mode, not vocabulary tweaks
+    if tone == "proposal":
+        section_rules = _PROPOSAL_SECTION_RULES
+    elif tone == "pitch_executive" and is_pitch:
+        section_rules = _PITCH_EXECUTIVE_SECTION_RULES
+    elif tone == "pitch_technical" and is_pitch:
+        section_rules = _PITCH_TECHNICAL_SECTION_RULES
+    elif is_pitch:  # "pitch" (general) or pitch-toned query
+        section_rules = _PITCH_GENERAL_SECTION_RULES
     else:
-        section_rules = (
-            "Structure your response:\n"
-            "  • Direct question: 1 section, heading=null, answer it fully\n"
-            "  • Multi-part answer: 2–3 sections with concise descriptive headings\n"
-            "  • General pitch/proposal: 5–6 sections (Solution Approach, Architecture, Roadmap, Outcomes, Experience)\n"
-            "  Default to fewer sections — only add one when the content genuinely warrants it.\n\n"
-        )
+        section_rules = _ASK_SECTION_RULES
 
     if use_web_search:
         source_rules = (
@@ -440,24 +533,59 @@ def _write_task(query: str, writer: Agent, context: list[Task], use_web_search: 
             "  Never use 'we' for web-sourced facts. Never blend KB and web claims in the same sentence.\n"
             "  If KB and web data conflict, use KB and ignore web.\n"
         )
-        sources_instruction = "  8. 'sources': list only internal KB document names cited.\n"
+        sources_instruction = (
+            "  9. 'sources': list ONLY the KB source names you directly cited in your response. "
+            "Copy each name VERBATIM from the [Source: <name> | ...] tag in the research brief — "
+            "do not paraphrase, shorten, or rename. Omit any source you did not reference.\n"
+        )
     else:
         source_rules = ""
-        sources_instruction = "  8. 'sources': list only source document names actually cited.\n"
+        sources_instruction = (
+            "  9. 'sources': list ONLY the source names you directly cited in your response. "
+            "Copy each name VERBATIM from the [Source: <name> | ...] tag in the research brief — "
+            "do not paraphrase, shorten, or rename. Omit any source you did not reference.\n"
+        )
+
+    if is_pitch or tone == "proposal":
+        win_strategy_rules = (
+            "  10. win_strategy (internal sales guide — never shown to the client):\n"
+            "     • pitch_strategy: 2–3 tactical sentences — which case study to open with and why, "
+            "the key angle to lead on, and one thing to explicitly avoid saying in this meeting.\n"
+            "     • value_propositions: exactly 3 concise strings, each anchored to a named KB "
+            "proof point or metric, tailored to this prospect's specific challenge.\n"
+            "     • objections: exactly 3 likely pushbacks "
+            "(incumbent vendor, budget, compliance, team size). "
+            "Every response must cite KB evidence — no generic consulting language.\n"
+        )
+        win_strategy_schema = (
+            ', "win_strategy": {'
+            '"pitch_strategy": "string", '
+            '"value_propositions": ["string", "string", "string"], '
+            '"objections": [{"objection": "string", "response": "string"}, '
+            '{"objection": "string", "response": "string"}, '
+            '{"objection": "string", "response": "string"}]}'
+        )
+    else:
+        win_strategy_rules = ""
+        win_strategy_schema = ""
 
     description = (
-        f'User question: "{query}"\n\n'
-        + tone_instruction
+        _format_history(history or [])
+        + mode_framing
+        + f'User question: "{query}"\n\n'
         + "Using ONLY the research brief above, answer the user's question.\n\n"
         + section_rules
         + "Rules:\n"
         + base_rules
         + sources_instruction
         + source_rules
+        + win_strategy_rules
         + "\nYOUR ENTIRE RESPONSE MUST BE A SINGLE JSON OBJECT. "
         "No preamble, no explanation, no text before or after. Start with { and end with }.\n"
         '{"sections": [{"heading": "Title or null", "content": "markdown content"}], '
-        '"sources": ["Source Name 1"]}'
+        '"sources": ["Source Name 1"]'
+        + win_strategy_schema
+        + "}"
     )
 
     return Task(
@@ -746,18 +874,26 @@ def _research_task_with_kb_context(
 
 # ── Pipeline entry point ──────────────────────────────────────────────────────
 
-def _run_crew_once(query: str, use_web_search: bool, tone: str) -> dict:
+def _run_crew_once(query: str, use_web_search: bool, tone: str, history: list[dict]) -> dict:
     """Build and execute the pipeline with whichever key is currently active.
 
     S3: KB searches run in parallel after planning, before the researcher runs (~4s saved).
     """
-    is_pitch = _is_pitch_request(query)
+    # Mode-aware is_pitch:
+    #   proposal → always full pitch retrieval (5-6 queries, n=6, verbatim extraction)
+    #   ask      → never pitch retrieval (3-4 queries, n=10, direct answer framing)
+    #   pitch*   → detect from query content as before
+    is_pitch = (
+        True if tone == "proposal"
+        else False if tone == "ask"
+        else _is_pitch_request(query)
+    )
     llm_fast = _make_llm(temperature=0.3)
     llm_writer = _make_llm(temperature=0.45)
 
     # ── Query planning (always runs) ───────────────────────────────────────
     planner = _build_planner(llm_fast)
-    t_plan = _plan_task(query, planner)
+    t_plan = _plan_task(query, planner, history=history)
     plan_result = Crew(
         agents=[planner], tasks=[t_plan],
         process=Process.sequential, verbose=False, memory=False,
@@ -793,7 +929,7 @@ def _run_crew_once(query: str, use_web_search: bool, tone: str) -> dict:
         use_web_search=use_web_search, is_pitch=is_pitch,
         web_context=web_context,
     )
-    t_write = _write_task(query, writer, context=[t_research], use_web_search=use_web_search, tone=tone)
+    t_write = _write_task(query, writer, context=[t_research], use_web_search=use_web_search, tone=tone, history=history)
 
     result = Crew(
         agents=[researcher, writer],
@@ -806,7 +942,7 @@ def _run_crew_once(query: str, use_web_search: bool, tone: str) -> dict:
     return _parse_result(result, found_sources, pre_fetched_web_sources=pre_fetched_web_sources)
 
 
-def run_crew(query: str, use_web_search: bool = False, tone: str = "balanced") -> dict:
+def run_crew(query: str, use_web_search: bool = False, tone: str = "balanced", history: list[dict] = None) -> dict:
     """
     Run the 3-agent pipeline and return {sections, sources, web_sources}.
     Rotates through available Groq API keys on rate-limit or quota errors.
@@ -818,7 +954,7 @@ def run_crew(query: str, use_web_search: bool = False, tone: str = "balanced") -
     key_manager.reset()
     while True:
         try:
-            return _run_crew_once(query, use_web_search, tone)
+            return _run_crew_once(query, use_web_search, tone, history or [])
         except RuntimeError:
             raise  # ChromaDB empty — do not rotate, surface as 503
         except Exception as exc:
@@ -833,6 +969,34 @@ def run_crew(query: str, use_web_search: bool = False, tone: str = "balanced") -
 
 
 # ── Output parsing ────────────────────────────────────────────────────────────
+
+def _resolve_source(name: str, found_sources: list[dict]) -> dict | None:
+    """Match a writer-output source name to a found_source entry.
+
+    Tries three strategies in order:
+      1. Exact string match
+      2. Case-insensitive match
+      3. Substring match (writer used a shorter or longer name variant)
+
+    Returns the matched source dict (with file + similarity_score) or None if
+    no match found (hallucinated source — caller should drop it).
+    """
+    name_l = name.lower().strip()
+    # 1. Exact
+    for src in found_sources:
+        if src["name"] == name:
+            return src
+    # 2. Case-insensitive exact
+    for src in found_sources:
+        if src["name"].lower() == name_l:
+            return src
+    # 3. Substring — writer shortened or slightly renamed the source
+    for src in found_sources:
+        src_l = src["name"].lower()
+        if name_l in src_l or src_l in name_l:
+            return src
+    return None
+
 
 def _parse_result(
     result,
@@ -856,21 +1020,19 @@ def _parse_result(
     if parsed and "sections" in parsed:
         sections = parsed["sections"]
 
-        # Prefer sources reported by the writer; fall back to KB tool tracking.
-        # Always show sources — even heading=null answers come from the KB.
-        # Map writer source names → {name, file, similarity_score} using KB tool tracking
-        # so URLs work for any document and similarity scores are preserved.
+        # Map writer-cited source names → {name, file, similarity_score}.
+        # Uses fuzzy matching so name variations (shortened, casing) still resolve.
+        # Sources that can't be matched (hallucinated names) are dropped — they
+        # have no file path and would show as broken pills with no link.
         writer_source_names = parsed.get("sources") or []
         if writer_source_names:
-            found_map = {s["name"]: s for s in found_sources}
-            sources = [
-                found_map.get(n, {"name": n, "file": None})
-                for n in writer_source_names
-            ]
+            resolved = (_resolve_source(n, found_sources) for n in writer_source_names)
+            sources = [s for s in resolved if s is not None]
         else:
-            sources = found_sources
+            sources = [s for s in found_sources if s.get("file")]
 
-        return {"sections": sections, "sources": sources, "web_sources": web_sources}
+        win_strategy = parsed.get("win_strategy") or None
+        return {"sections": sections, "sources": sources, "web_sources": web_sources, "win_strategy": win_strategy}
 
     # Last resort — wrap the raw text as a plain conversational response
     return {

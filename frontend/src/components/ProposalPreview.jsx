@@ -13,6 +13,8 @@ import {
   Copy,
   Check,
   ExternalLink,
+  Target,
+  ChevronDown,
 } from "lucide-react";
 
 const CopyButton = ({ text }) => {
@@ -51,6 +53,67 @@ const cardVariants = {
     y: 0,
     transition: { delay: i * 0.07, duration: 0.3, ease: "easeOut" },
   }),
+};
+
+const WinStrategy = ({ data, index }) => {
+  const [open, setOpen] = useState(false);
+  if (!data) return null;
+
+  return (
+    <motion.div
+      className="win-strategy-card"
+      custom={index}
+      variants={cardVariants}
+      initial="hidden"
+      animate="visible"
+    >
+      <button className="win-strategy-header" onClick={() => setOpen((o) => !o)}>
+        <span className="win-strategy-badge">INTERNAL</span>
+        <Target size={14} className="win-strategy-icon" />
+        <span className="win-strategy-title">How to Win This Client</span>
+        <ChevronDown
+          size={14}
+          className={`win-strategy-chevron${open ? " open" : ""}`}
+        />
+      </button>
+
+      {open && (
+        <div className="win-strategy-body">
+          {data.pitch_strategy && (
+            <div className="win-strategy-section">
+              <h4 className="win-strategy-section-title">Pitch Strategy</h4>
+              <p className="win-strategy-text">{data.pitch_strategy}</p>
+            </div>
+          )}
+
+          {data.value_propositions?.length > 0 && (
+            <div className="win-strategy-section">
+              <h4 className="win-strategy-section-title">Value Propositions</h4>
+              <ul className="win-strategy-list">
+                {data.value_propositions.map((vp, i) => (
+                  <li key={i}>{vp}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {data.objections?.length > 0 && (
+            <div className="win-strategy-section">
+              <h4 className="win-strategy-section-title">Objections & Responses</h4>
+              <div className="win-objections">
+                {data.objections.map((obj, i) => (
+                  <div key={i} className="win-objection">
+                    <div className="win-objection-q">"{obj.objection}"</div>
+                    <div className="win-objection-a">{obj.response}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </motion.div>
+  );
 };
 
 const ProposalPreview = ({ data }) => (
@@ -108,18 +171,18 @@ const ProposalPreview = ({ data }) => (
               {data.sources.map((src) => {
                 const name = typeof src === "string" ? src : src.name;
                 const url = typeof src === "string" ? null : src.url;
-                const similarityScore = typeof src === "string" ? null : src.similarity_score;
-                const scoreDisplay = similarityScore ? ` (${similarityScore.toFixed(0)}%)` : "";
+                const score = typeof src === "string" ? null : src.similarity_score;
+                const scoreClass = score >= 70 ? "score-high" : score >= 45 ? "score-mid" : "score-low";
+                const badge = score != null ? (
+                  <span className={`pill-score ${scoreClass}`}>{Math.round(score)}%</span>
+                ) : null;
                 return url ? (
-                  <a key={name} href={url} target="_blank" rel="noopener noreferrer" className="pill pill-kb" title={`Similarity score: ${similarityScore?.toFixed(1)}%`}>
-                    {name}
-                    {scoreDisplay}
-                    <ExternalLink size={10} />
+                  <a key={name} href={url} target="_blank" rel="noopener noreferrer" className="pill pill-kb">
+                    {name}{badge}<ExternalLink size={10} />
                   </a>
                 ) : (
-                  <span key={name} className="pill pill-kb" title={`Similarity score: ${similarityScore?.toFixed(1)}%`}>
-                    {name}
-                    {scoreDisplay}
+                  <span key={name} className="pill pill-kb">
+                    {name}{badge}
                   </span>
                 );
               })}
@@ -144,6 +207,13 @@ const ProposalPreview = ({ data }) => (
           </div>
         )}
       </motion.div>
+    )}
+
+    {data.win_strategy && (
+      <WinStrategy
+        data={data.win_strategy}
+        index={(data.sections?.length ?? 0) + 1}
+      />
     )}
   </div>
 );
