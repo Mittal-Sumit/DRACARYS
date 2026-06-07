@@ -583,7 +583,13 @@ def _parallel_kb_fetch(
         for chunk in chunks:
             display = chunk.get("display_name") or chunk["file"]
             score = chunk.get("score", 0.0)
+            client = chunk.get("client", "Unknown")
+            industry = chunk.get("industry", "Unknown")
+            cloud = chunk.get("cloud", "Unknown")
+            services = chunk.get("services", "")
+            technologies = chunk.get("technologies", "")
             lines.append(f"[Source: {display} | relevance: {score:.3f}]")
+            lines.append(f"[Tags: client={client} | industry={industry} | cloud={cloud} | services={services} | technologies={technologies}]")
             lines.append(chunk["text"][:text_limit].strip())
             lines.append("")
 

@@ -105,6 +105,11 @@ def retrieve(
             "file": meta["file"],
             "chunk_id": meta["chunk_id"],
             "display_name": meta.get("display_name") or meta["file"],
+            "client": meta.get("client", "Unknown"),
+            "industry": meta.get("industry", "Unknown"),
+            "cloud": meta.get("cloud", "Unknown"),
+            "services": meta.get("services", ""),
+            "technologies": meta.get("technologies", ""),
             "score": round(1 - dist, 4),
         }
         for doc, meta, dist in zip(
@@ -125,6 +130,11 @@ def retrieve(
             "file": all_metas[i]["file"],
             "chunk_id": all_metas[i]["chunk_id"],
             "display_name": all_metas[i].get("display_name") or all_metas[i]["file"],
+            "client": all_metas[i].get("client", "Unknown"),
+            "industry": all_metas[i].get("industry", "Unknown"),
+            "cloud": all_metas[i].get("cloud", "Unknown"),
+            "services": all_metas[i].get("services", ""),
+            "technologies": all_metas[i].get("technologies", ""),
             "score": round(float(bm25_scores[i]), 4),
         }
         for i in top_bm25_idx
