@@ -1,0 +1,3 @@
+# Exclude everything except the frontend source
+*
+!frontend/

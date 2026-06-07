@@ -25,7 +25,7 @@ CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')"
 COPY chroma_db/ chroma_db/
 
 # Runtime code
-#COPY docs/ docs/
+COPY docs/ docs/
 COPY ingestion/ ingestion/
 COPY rag/ rag/
 COPY backend/ backend/
@@ -36,6 +36,9 @@ RUN chmod +x /entrypoint.sh
 ENV SECRET_KEY=build-time-placeholder
 RUN cd backend && python manage.py collectstatic --noinput
 
-EXPOSE 7860
+ENV DOCS_DIR=/app/docs
+ENV CHROMA_DB_PATH=/app/chroma_db
+
+EXPOSE 8000
 
 CMD ["/entrypoint.sh"]
