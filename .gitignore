@@ -43,7 +43,6 @@ build/
 processed_data/*.pkl
 
 # ChromaDB — regenerate with: python -m ingestion.ingest
-chroma_db/
 
 # Egg info
 *.egg-info/
