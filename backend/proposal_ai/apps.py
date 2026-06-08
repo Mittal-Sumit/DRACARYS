@@ -9,6 +9,15 @@ class ProposalAiConfig(AppConfig):
     name = "proposal_ai"
 
     def ready(self):
+        import sys
+        argv = sys.argv
+        # Only pre-warm for actual server processes (runserver or gunicorn).
+        # Management commands (migrate, collectstatic, shell, etc.) exit quickly
+        # and kill the daemon thread mid-C++ operation, causing a core dump.
+        is_management = argv and "manage.py" in argv[0]
+        is_runserver = "runserver" in argv
+        if is_management and not is_runserver:
+            return
         # Spawn a daemon thread so model loading doesn't block Django startup.
         # Daemon=True means it won't prevent the process from exiting.
         threading.Thread(target=self._warm_models, daemon=True).start()
