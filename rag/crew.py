@@ -40,24 +40,31 @@ from crewai.tools import BaseTool
 
 from rag.retriever import retrieve
 
-_GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+_GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini/gemini-2.5-flash")
 _TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 
-_GROQ_BASE_URL = "https://api.groq.com/openai/v1"
-
-from rag.groq_keys import GroqQuotaExhaustedError, is_rotatable_error, key_manager
+from rag.gemini_keys import GeminiQuotaExhaustedError, is_rotatable_error, key_manager
 
 
 def _make_llm(temperature: float = 0.4) -> LLM:
-    # Use Groq's OpenAI-compatible endpoint without a provider prefix.
-    # The groq/ prefix routes through litellm's Groq provider which generates
-    # hermes-style XML tool calls that Groq's API rejects. The openai path
-    # uses standard JSON function calling which Groq accepts.
     return LLM(
-        model=_GROQ_MODEL,
-        base_url=_GROQ_BASE_URL,
+        model=_GEMINI_MODEL,
         api_key=key_manager.current,
         temperature=temperature,
+        max_tokens=16384,
+    )
+
+
+def _make_writer_llm(temperature: float = 0.45) -> LLM:
+    # CrewAI's Gemini native provider does not accept {"type": "json_object"} —
+    # it only accepts a Pydantic BaseModel subclass for structured output.
+    # JSON format is enforced purely via the output_schema preamble at the top
+    # of the writer task description.
+    return LLM(
+        model=_GEMINI_MODEL,
+        api_key=key_manager.current,
+        temperature=temperature,
+        max_tokens=16384,
     )
 
 
@@ -557,44 +564,67 @@ def _write_task(query: str, writer: Agent, context: list[Task], use_web_search: 
             "(incumbent vendor, budget, compliance, team size). "
             "Every response must cite KB evidence — no generic consulting language.\n"
         )
-        win_strategy_schema = (
-            ', "win_strategy": {'
-            '"pitch_strategy": "string", '
-            '"value_propositions": ["string", "string", "string"], '
-            '"objections": [{"objection": "string", "response": "string"}, '
-            '{"objection": "string", "response": "string"}, '
-            '{"objection": "string", "response": "string"}]}'
+        output_schema = (
+            "YOUR RESPONSE MUST BE THIS EXACT JSON STRUCTURE — all three top-level keys are required:\n"
+            '{\n'
+            '  "sections": [{"heading": "string or null", "content": "markdown string"}],\n'
+            '  "sources": ["verbatim source name from brief"],\n'
+            '  "win_strategy": {\n'
+            '    "pitch_strategy": "2-3 tactical sentences",\n'
+            '    "value_propositions": ["string", "string", "string"],\n'
+            '    "objections": [\n'
+            '      {"objection": "string", "response": "string"},\n'
+            '      {"objection": "string", "response": "string"},\n'
+            '      {"objection": "string", "response": "string"}\n'
+            '    ]\n'
+            '  }\n'
+            '}\n'
+            'Output ONLY the JSON object. No preamble, no explanation, no markdown fences.\n\n'
         )
     else:
         win_strategy_rules = ""
-        win_strategy_schema = ""
+        output_schema = (
+            "YOUR RESPONSE MUST BE THIS EXACT JSON STRUCTURE:\n"
+            '{"sections": [{"heading": "string or null", "content": "markdown string"}], '
+            '"sources": ["verbatim source name from brief"]}\n'
+            'Output ONLY the JSON object. No preamble, no explanation, no markdown fences.\n\n'
+        )
 
     description = (
-        _format_history(history or [])
+        output_schema                          # schema FIRST — Gemini anchors on this
+        + _format_history(history or [])
         + mode_framing
         + f'User question: "{query}"\n\n'
-        + "Using ONLY the research brief above, answer the user's question.\n\n"
+        + "Using ONLY the research brief provided in your context, answer the user's question.\n\n"
         + section_rules
         + "Rules:\n"
         + base_rules
         + sources_instruction
         + source_rules
         + win_strategy_rules
-        + "\nYOUR ENTIRE RESPONSE MUST BE A SINGLE JSON OBJECT. "
-        "No preamble, no explanation, no text before or after. Start with { and end with }.\n"
-        '{"sections": [{"heading": "Title or null", "content": "markdown content"}], '
-        '"sources": ["Source Name 1"]'
-        + win_strategy_schema
-        + "}"
     )
 
-    return Task(
-        description=description,
-        expected_output=(
+    if is_pitch or tone == "proposal":
+        expected_output = (
+            'A single JSON object and nothing else — must include all three top-level keys: '
+            '{"sections": [{"heading": "string or null", "content": "string"}], '
+            '"sources": ["string"], '
+            '"win_strategy": {"pitch_strategy": "string", '
+            '"value_propositions": ["string", "string", "string"], '
+            '"objections": [{"objection": "string", "response": "string"}, '
+            '{"objection": "string", "response": "string"}, '
+            '{"objection": "string", "response": "string"}]}}'
+        )
+    else:
+        expected_output = (
             'A single JSON object and nothing else: '
             '{"sections": [{"heading": "string or null", "content": "string"}], '
             '"sources": ["string"]}'
-        ),
+        )
+
+    return Task(
+        description=description,
+        expected_output=expected_output,
         agent=writer,
         context=context,
     )
@@ -684,21 +714,24 @@ def _parallel_kb_fetch(
         for display, scores in source_scores.items()
     ]
 
-    # Sort by similarity score (descending) and keep top 3
+    # Sort by similarity score (descending) — keep all sources.
+    # Capping here causes sources to be silently dropped: the Writer sees content
+    # from every retrieved document in the brief, but can only have its citations
+    # resolved against found_sources. Any document not in this list gets dropped
+    # even if the Writer correctly cited it.
     source_with_scores.sort(key=lambda x: x["similarity_score"], reverse=True)
-    top_sources = source_with_scores[:3]
 
-    # Fill in file paths for top sources by looking back at chunks
-    top_source_names = {s["name"] for s in top_sources}
+    # Fill in file paths for all sources by looking back at chunks
+    all_source_names = {s["name"] for s in source_with_scores}
     for chunk_list in results_by_query.values():
         for chunk in chunk_list:
             display = chunk.get("display_name") or chunk["file"]
-            if display in top_source_names:
-                for src in top_sources:
+            if display in all_source_names:
+                for src in source_with_scores:
                     if src["name"] == display and src["file"] is None:
                         src["file"] = chunk["file"]
 
-    found_sources = top_sources
+    found_sources = source_with_scores
 
     # Format into a structured text block for the researcher
     lines = ["=== PRE-FETCHED KNOWLEDGE BASE RESULTS ===\n"]
@@ -889,7 +922,6 @@ def _run_crew_once(query: str, use_web_search: bool, tone: str, history: list[di
         else _is_pitch_request(query)
     )
     llm_fast = _make_llm(temperature=0.3)
-    llm_writer = _make_llm(temperature=0.45)
 
     # ── Query planning (always runs) ───────────────────────────────────────
     planner = _build_planner(llm_fast)
@@ -905,24 +937,28 @@ def _run_crew_once(query: str, use_web_search: bool, tone: str, history: list[di
     # Pre-fetching web results eliminates the live SearchWebTool call that was
     # causing the LLM to emit <function=search_web(...)> as literal text.
     n_results = 6 if is_pitch else 10
+    # Pitch: 5-6 queries × 6 chunks × 1000 chars ≈ 9k tokens — pushes researcher over
+    # Groq's 12k/request limit. 600 chars keeps the KB brief under 5.5k tokens.
+    # Non-pitch: 10 chunks total → 1000 chars each is fine (~2.5k tokens).
+    text_limit = 600 if is_pitch else 1000
     if use_web_search:
         with ThreadPoolExecutor(max_workers=2) as executor:
             kb_future = executor.submit(
-                _parallel_kb_fetch, queries, n_results, 3, 1000
+                _parallel_kb_fetch, queries, n_results, 3, text_limit
             )
             web_future = executor.submit(_fetch_web_results, queries)
             kb_context, found_sources = kb_future.result()
             web_context, pre_fetched_web_sources = web_future.result()
     else:
         kb_context, found_sources = _parallel_kb_fetch(
-            queries, n_results=n_results, max_per_file=3, text_limit=1000,
+            queries, n_results=n_results, max_per_file=3, text_limit=text_limit,
         )
         web_context, pre_fetched_web_sources = "", []
 
     # ── Research + Write ───────────────────────────────────────────────────
     # All context pre-injected — researcher has no live tools to call.
     researcher = _build_researcher_with_context(llm_fast, use_web_search=use_web_search)
-    writer = _build_writer(llm_writer)
+    writer = _build_writer(_make_writer_llm(temperature=0.45))
 
     t_research = _research_task_with_kb_context(
         researcher, query, kb_context,
@@ -961,8 +997,8 @@ def run_crew(query: str, use_web_search: bool = False, tone: str = "balanced", h
             if is_rotatable_error(exc):
                 if key_manager.rotate():
                     continue  # retry with next key
-                raise GroqQuotaExhaustedError(
-                    f"All {key_manager.pool_size} Groq API key(s) have hit their rate or quota limit. "
+                raise GeminiQuotaExhaustedError(
+                    f"All {key_manager.pool_size} Gemini API key(s) have hit their rate or quota limit. "
                     "Please try again in a few minutes."
                 ) from exc
             raise  # non-rotatable error
@@ -1075,16 +1111,25 @@ def _fix_json_newlines(text: str) -> str:
     return "".join(result)
 
 
+def _remove_trailing_commas(text: str) -> str:
+    """Remove trailing commas before } and ] — valid JSON5 but not JSON."""
+    return re.sub(r",(\s*[}\]])", r"\1", text)
+
+
 def _try_parse(candidate: str) -> dict | None:
-    """Try json.loads on the raw candidate, then on the newline-fixed version."""
-    try:
-        return json.loads(candidate)
-    except json.JSONDecodeError:
-        pass
-    try:
-        return json.loads(_fix_json_newlines(candidate))
-    except json.JSONDecodeError:
-        return None
+    """Try json.loads across four repair passes: raw, newline-fixed,
+    trailing-comma-fixed, and both repairs combined."""
+    for attempt in (
+        candidate,
+        _fix_json_newlines(candidate),
+        _remove_trailing_commas(candidate),
+        _remove_trailing_commas(_fix_json_newlines(candidate)),
+    ):
+        try:
+            return json.loads(attempt)
+        except json.JSONDecodeError:
+            pass
+    return None
 
 
 def _extract_json(text: str) -> dict | None:
@@ -1109,9 +1154,13 @@ def _extract_json(text: str) -> dict | None:
         if result is not None:
             return result
 
-    # 3. Brace-match from "sections" key — immune to { } chars in preceding prose
-    idx = text.find('"sections"')
-    if idx != -1:
+    # 3. Brace-match from "sections" key — scan right-to-left so any "sections"
+    # mention in LLM preamble prose doesn't shadow the real JSON key.
+    search_from = len(text)
+    while True:
+        idx = text.rfind('"sections"', 0, search_from)
+        if idx == -1:
+            break
         brace_start = text.rfind("{", 0, idx)
         if brace_start != -1:
             depth = 0
@@ -1122,9 +1171,10 @@ def _extract_json(text: str) -> dict | None:
                     depth -= 1
                     if depth == 0:
                         result = _try_parse(text[brace_start : brace_start + i + 1])
-                        if result is not None:
+                        if result is not None and "sections" in result:
                             return result
-                        break  # matched brace found but still invalid — stop trying
+                        break
+        search_from = idx  # try the next occurrence to the left
 
     # 4. Last resort: first { to last }
     start = text.find("{")

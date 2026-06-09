@@ -63,8 +63,8 @@ def generate_proposal(query: str, use_web_search: bool = False, tone: str = "bal
         except RuntimeError:
             raise  # Empty ChromaDB — surface as 503
         except Exception as exc:
-            from rag.groq_keys import GroqQuotaExhaustedError
-            if isinstance(exc, GroqQuotaExhaustedError):
+            from rag.gemini_keys import GeminiQuotaExhaustedError
+            if isinstance(exc, GeminiQuotaExhaustedError):
                 raise  # surface to views.py — do not silently fall back
             result = None
 
