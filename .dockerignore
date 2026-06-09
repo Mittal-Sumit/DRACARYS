@@ -13,9 +13,9 @@ node_modules/
 .env
 .msal_cache.json
 
-# Local databases
-*.db
-*.sqlite3
+# Local databases — exclude Django's DB only, NOT chroma_db/chroma.sqlite3
+db.sqlite3
+backend/db.sqlite3
 
 # Git internals
 .git/
