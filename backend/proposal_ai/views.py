@@ -47,8 +47,8 @@ class GenerateProposalView(APIView):
         except RuntimeError as e:
             return Response({"error": str(e)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
         except Exception as e:
-            from rag.groq_keys import GroqQuotaExhaustedError
-            if isinstance(e, GroqQuotaExhaustedError):
+            from rag.gemini_keys import GeminiQuotaExhaustedError
+            if isinstance(e, GeminiQuotaExhaustedError):
                 return Response({"error": str(e)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
             return Response(
                 {"error": "Failed to generate a response. Please try again."},
