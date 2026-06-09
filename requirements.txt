@@ -36,12 +36,16 @@ chromadb>=0.5.0
 # Hybrid search (BM25 keyword retrieval)
 rank-bm25>=0.2.2
 
-# LLM (Groq)
+# LLM (Groq — kept for fallback reference, not used as primary)
 groq>=0.9.0
 
 # Multi-agent pipeline
 crewai>=0.80.0
 litellm>=1.0.0
+
+# Gemini (primary LLM — both packages required by CrewAI's native Gemini provider)
+google-generativeai>=0.8.0
+google-genai>=2.0.0
 
 # OneDrive / SharePoint integration (Microsoft Graph API)
 msal>=1.20.0
