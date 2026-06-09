@@ -30,7 +30,7 @@ COPY ingestion/ ingestion/
 COPY rag/ rag/
 COPY backend/ backend/
 COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh
 
 # Dummy SECRET_KEY only for collectstatic; overridden at runtime by HF Spaces secret
 ENV SECRET_KEY=build-time-placeholder
